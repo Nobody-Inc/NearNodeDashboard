@@ -1,0 +1,1325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Near Node Dashboard</title>
+<script>
+  // Apply the saved theme before first paint. No saved choice = follow the OS setting.
+  try { const t = localStorage.getItem("nvs-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch {}
+</script>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --text: #0b0b0b;
+  --text-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --border: rgba(11,11,11,0.10);
+  --wash: rgba(11,11,11,0.04);
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+  --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
+  --good-text: #006300;
+  --accent: #2a78d6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --text: #f0efec; --text-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --good-text: #0ca30c; --accent: #3987e5;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --text: #f0efec; --text-2: #c3c2b7; --muted: #898781;
+  --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --good-text: #0ca30c; --accent: #3987e5;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.wrap { max-width: 1400px; margin: 0 auto; padding: 20px 16px 48px; }
+header { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+h1 { font-size: 20px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+h1 .node-name { font-weight: 500; color: var(--text-2); }
+h1 .node-name::before { content: "·"; margin: 0 8px; color: var(--muted); }
+.sub { color: var(--text-2); font-size: 13px; display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 4px; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface); }
+.seg button { border: 0; background: none; color: var(--text-2); padding: 6px 11px; font: inherit; font-size: 13px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button:hover { background: var(--wash); }
+.seg button[aria-pressed="true"] { color: var(--text); font-weight: 650; background: var(--wash); }
+.btn { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 8px;
+  padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.btn:hover { background: var(--wash); }
+.btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
+.toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); cursor: pointer;
+  border: 1px solid var(--border); background: var(--surface); border-radius: 8px; padding: 5px 10px; user-select: none; }
+.toggle input { accent-color: var(--accent); margin: 0; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; padding: 3px 10px 3px 8px;
+  border-radius: 999px; border: 1px solid var(--border); background: var(--surface); }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 12px; margin-bottom: 24px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; min-width: 0; }
+.tile .k { color: var(--text-2); font-size: 12px; font-weight: 500; }
+.tile .v { font-size: 22px; font-weight: 650; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .d { color: var(--muted); font-size: 12px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bar { height: 6px; background: var(--grid); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--s1); border-radius: 3px; }
+
+h2 { font-size: 15px; font-weight: 650; margin: 28px 0 12px; color: var(--text); display: flex; align-items: center; gap: 10px; }
+.sec-head { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; border-radius: 6px; padding: 2px 6px 2px 2px; margin-left: -2px; }
+.sec-head:hover { background: var(--wash); }
+.sec-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sec-head .chev { display: inline-block; width: 14px; color: var(--muted); transition: transform .15s; }
+.sec.collapsed .chev { transform: rotate(-90deg); }
+.sec.collapsed .sec-body { display: none; }
+.sec-off { font-size: 11px; font-weight: 600; color: var(--text-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
+.logpanel { margin-top: 16px; }
+.checkpanel { margin-bottom: 16px; }
+#checkTable td { vertical-align: top; }
+#checkTable td.detail { white-space: normal; min-width: 320px; color: var(--text-2); }
+#checkTable .grp td { background: var(--wash); font-size: 12px; font-weight: 600; color: var(--text-2); padding: 6px 12px; }
+.site-footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid var(--grid); display: flex; gap: 8px; justify-content: center;
+  flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.site-footer a { color: var(--text-2); text-decoration: none; }
+.site-footer a:hover { color: var(--accent); text-decoration: underline; }
+.sub-h { font-size: 14px; font-weight: 600; margin: 0 0 10px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.lvl { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.lvl i { font-style: normal; }
+.msg { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.45; white-space: pre-wrap;
+  word-break: break-word; max-height: 2.9em; overflow: hidden; cursor: pointer; min-width: 280px; }
+.msg.open { max-height: none; }
+#logTable td { vertical-align: top; }
+#logTable td.msgcell { white-space: normal; }
+.collect { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px 12px; margin: 0 0 12px; }
+.collect legend { font-size: 13px; font-weight: 600; padding: 0 4px; }
+.collect label { font-size: 13px; display: flex; gap: 6px; align-items: flex-start; }
+.collect small { color: var(--muted); font-size: 12px; display: block; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 12px; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px 10px; min-width: 0; }
+.card-h { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.card-t { font-weight: 600; font-size: 14px; }
+.card-s { color: var(--muted); font-size: 12px; }
+.card-now { text-align: right; font-size: 20px; font-weight: 650; white-space: nowrap; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0 2px; font-size: 12px; color: var(--text-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; }
+.legend b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.trend { color: var(--text-2); font-size: 12px; margin-top: 4px; display: flex; flex-wrap: wrap; gap: 2px 12px; font-variant-numeric: tabular-nums; }
+.trend .up, .trend .down { font-weight: 600; color: var(--text); }
+.chart-box { position: relative; height: 190px; margin-top: 6px; }
+.empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; }
+
+.banner { border: 1px solid var(--border); border-left: 4px solid var(--critical); background: var(--surface);
+  border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; display: none; }
+.banner.show { display: block; }
+
+dialog { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--text);
+  padding: 0; width: min(560px, calc(100vw - 32px)); }
+dialog::backdrop { background: rgba(0,0,0,0.4); }
+dialog form { padding: 20px; }
+dialog h3 { margin: 0 0 14px; font-size: 16px; }
+.field { display: grid; gap: 4px; margin-bottom: 12px; }
+.field label { font-size: 13px; font-weight: 600; }
+.field small { color: var(--muted); font-size: 12px; }
+.field input[type=text], .field input[type=number], .field select { font: inherit; padding: 7px 9px; border-radius: 8px;
+  border: 1px solid var(--axis); background: var(--page); color: var(--text); width: 100%; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; align-items: center; }
+.err { color: var(--critical); font-size: 13px; margin-right: auto; }
+.peers-bar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; margin-bottom: 10px; }
+.peers-bar input[type=search] { font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--axis);
+  background: var(--surface); color: var(--text); width: min(280px, 100%); }
+.peers-bar .count { color: var(--text-2); font-size: 13px; margin-left: auto; }
+.table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+tbody tr:hover { background: var(--wash); }
+th { font-size: 12px; font-weight: 600; color: var(--text-2); position: sticky; top: 0; background: var(--surface); }
+th[data-sort] { cursor: pointer; user-select: none; }
+th[data-sort]:hover { color: var(--text); }
+th .arrow { color: var(--muted); margin-left: 4px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+td .muted { color: var(--muted); font-size: 12px; }
+td .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+.tag { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2); margin-left: 6px; }
+.pct-warn { font-weight: 600; }
+tr.gone td { opacity: 0.55; }
+tr.gone:hover td { opacity: 0.85; }
+@media (max-width: 560px) { .row2 { grid-template-columns: 1fr; } .card-now { font-size: 17px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Near Node Dashboard<span class="node-name" id="nodeName" hidden></span></h1>
+      <div class="sub" id="sub"><span>Connecting…</span></div>
+    </div>
+    <div class="controls">
+      <span class="pill" id="health"><span class="dot" style="background:var(--muted)"></span>—</span>
+      <div class="seg" id="ranges" role="group" aria-label="Time range">
+        <button data-r="900">15m</button>
+        <button data-r="3600" aria-pressed="true">1h</button>
+        <button data-r="21600">6h</button>
+        <button data-r="86400">24h</button>
+        <button data-r="all">All</button>
+      </div>
+      <label class="toggle" title="Collect every second instead of the configured interval">
+        <input type="checkbox" id="fast"> 1s mode
+      </label>
+      <div class="seg" id="theme" role="group" aria-label="Color theme">
+        <button data-theme="system" title="Match the system setting">System</button>
+        <button data-theme="light">Light</button>
+        <button data-theme="dark">Dark</button>
+      </div>
+      <button class="btn" id="openSettings">Settings</button>
+    </div>
+  </header>
+
+  <div class="banner" id="banner"></div>
+
+  <div class="tiles" id="tiles"></div>
+
+  <section class="sec" data-sec="system">
+    <h2><button class="sec-head" aria-expanded="true"><span class="chev">▾</span><span>System</span></button><span class="sec-off" hidden>collection off</span></h2>
+    <div class="sec-body"><div class="grid" id="g-system"></div></div>
+  </section>
+
+  <section class="sec" data-sec="node">
+    <h2><button class="sec-head" aria-expanded="true"><span class="chev">▾</span><span>NEAR node</span></button><span class="sec-off" hidden>collection off</span></h2>
+    <div class="sec-body">
+      <div class="checkpanel">
+        <h3 class="sub-h">Host checks <span class="card-s" id="checkStatus">running…</span></h3>
+        <div class="table-wrap">
+          <table id="checkTable">
+            <thead><tr><th>Check</th><th>Status</th><th>Current</th><th>Expected</th><th>Details</th></tr></thead>
+            <tbody><tr><td colspan="5" class="muted">Running checks…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="grid" id="g-node"></div>
+      <div class="logpanel">
+        <h3 class="sub-h">Service log <span class="card-s" id="logStatus"></span></h3>
+        <div class="peers-bar">
+          <div class="seg" id="logLevel" role="group" aria-label="Log level">
+            <button data-l="all" aria-pressed="true">All</button>
+            <button data-l="warn">⚠ Warnings</button>
+            <button data-l="error">✕ Errors</button>
+          </div>
+          <input type="search" id="logSearch" placeholder="Search messages or targets" aria-label="Search log">
+          <label class="toggle" title="Group lines that only differ by numbers, hashes or IPs"><input type="checkbox" id="logGroup" checked> Group repeats</label>
+          <span class="count" id="logCount"></span>
+        </div>
+        <div class="table-wrap" style="max-height:520px;overflow:auto">
+          <table id="logTable"><thead></thead><tbody><tr><td class="muted">Loading log…</td></tr></tbody></table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="sec" data-sec="validator">
+    <h2><button class="sec-head" aria-expanded="true"><span class="chev">▾</span><span>Validator</span></button><span class="sec-off" hidden>collection off</span></h2>
+    <div class="sec-body"><div class="grid" id="g-validator"></div></div>
+  </section>
+
+  <section class="sec" data-sec="shard">
+  <h2><button class="sec-head" aria-expanded="true"><span class="chev">▾</span><span id="shardTitle">Validators on your shard</span></button><span class="sec-off" hidden>collection off</span></h2>
+  <div class="sec-body">
+  <div id="shardEmpty" class="card-s"></div>
+  <div id="shardBox" hidden>
+    <div class="peers-bar">
+      <label class="toggle" title="Nearly every validator endorses every shard, so this adds most of the validator set">
+        <input type="checkbox" id="shardEndorsers"> Include endorsers</label>
+      <span class="count" id="shardCount"></span>
+    </div>
+    <div class="table-wrap">
+      <table id="shardTable">
+        <thead><tr>
+          <th data-sort="shard" class="num">Shard</th>
+          <th data-sort="account_id">Validator</th>
+          <th data-sort="role">Role</th>
+          <th data-sort="stake" class="num">Stake</th>
+          <th data-sort="blocks" class="num">Blocks</th>
+          <th data-sort="chunks" class="num" title="Chunks for this shard">Chunks (shard)</th>
+          <th data-sort="endorsements" class="num" title="Endorsements for this shard">Endorsements (shard)</th>
+          <th data-sort="ping" class="num" title="Average ping over the selected range, if this validator is a connected peer">Peer ping</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p class="card-s" style="margin-top:8px">Validators assigned to the same shard as you this epoch. By default this is the other chunk producers on your shard. Chunk and endorsement figures are for that shard only; blocks are across all shards. Peer ping only shows if the validator is currently one of your peers.</p>
+  </div>
+  </div>
+  </section>
+
+  <section class="sec" data-sec="peers">
+  <h2><button class="sec-head" aria-expanded="true"><span class="chev">▾</span><span>Peers</span></button><span class="sec-off" hidden>collection off</span></h2>
+  <div class="sec-body">
+  <div class="peers-bar">
+    <input type="search" id="peerSearch" placeholder="Filter by name, IP or peer ID" aria-label="Filter peers">
+    <label class="toggle"><input type="checkbox" id="peerValidatorsOnly"> Validators only</label>
+    <label class="toggle" title="Peers that disconnected within the selected time range"><input type="checkbox" id="peerShowGone" checked> Show disconnected</label>
+    <span class="count" id="peerCount"></span>
+  </div>
+  <div class="table-wrap">
+    <table id="peerTable">
+      <thead><tr>
+        <th data-sort="account_id">Name</th>
+        <th data-sort="ip">IP</th>
+        <th data-sort="session" title="How long the peer has been connected, or when it disconnected">Connection</th>
+        <th data-sort="stake" class="num">Stake</th>
+        <th data-sort="blocks" class="num">Blocks</th>
+        <th data-sort="chunks" class="num">Chunks</th>
+        <th data-sort="endorsements" class="num">Endorsements</th>
+        <th data-sort="ping_last" class="num" title="Most recent round-trip time">Ping</th>
+        <th data-sort="ping_avg" class="num" title="Average over the selected range">Avg</th>
+        <th data-sort="ping_min" class="num">Min / Max</th>
+        <th data-sort="ping_jitter" class="num" title="Standard deviation of round-trip time">Jitter</th>
+        <th data-sort="ping_loss" class="num" title="Pings with no reply in the selected range">Loss</th>
+        <th title="Average ping per time bucket over the selected range">Trend</th>
+      </tr></thead>
+      <tbody><tr><td colspan="13" class="muted">Loading peers…</td></tr></tbody>
+    </table>
+  </div>
+  <p class="card-s" style="margin-top:8px">Names come from matching each peer's node key against <code>known_producers</code>. Peers that aren't validators have no name. Block, chunk and endorsement figures are for the current epoch (produced ÷ expected). ⚠ means below 95%, ✕ means below 80%. Ping columns cover the selected time range and are measured from this server. <span id="pingInfo"></span></p>
+  </div>
+  </section>
+
+  <footer class="site-footer">
+    <span>Near Node Dashboard</span><span aria-hidden="true">·</span>
+    <span>Created by <a href="https://nobodyinc.net" target="_blank" rel="noopener">nobodyinc.net</a></span><span aria-hidden="true">·</span>
+    <a href="https://github.com/Nobody-Inc/NearValidatorStats" target="_blank" rel="noopener">GitHub</a>
+  </footer>
+</div>
+
+<dialog id="settings">
+  <form method="dialog" id="settingsForm">
+    <h3>Settings</h3>
+    <fieldset class="collect">
+      <legend>Data collection</legend>
+      <label><input type="checkbox" name="collect_system"><span>System<small>CPU, memory, disk, network, uptime</small></span></label>
+      <label><input type="checkbox" name="collect_node"><span>NEAR node<small>sync, blocks, peers count, P2P, latency, version</small></span></label>
+      <label><input type="checkbox" name="collect_validator"><span>Validator<small>validators RPC; also feeds the shard table</small></span></label>
+      <label><input type="checkbox" name="collect_peers"><span>Peers<small>peer tracking, churn and pings</small></span></label>
+      <label><input type="checkbox" name="collect_logs"><span>Service log<small>WARN / ERROR lines from neard</small></span></label>
+    </fieldset>
+    <div class="row2">
+      <div class="field">
+        <label for="c-lsrc">Log source</label>
+        <select id="c-lsrc" name="log_source">
+          <option value="journald">systemd journal</option>
+          <option value="file">Log file</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="c-lunit">systemd unit</label>
+        <input type="text" id="c-lunit" name="log_unit" placeholder="neard">
+      </div>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label for="c-lfile">Log file</label>
+        <input type="text" id="c-lfile" name="log_file" placeholder="/var/log/neard.log">
+        <small>Used when the source is "Log file". Docker json logs work too.</small>
+      </div>
+      <div class="field">
+        <label for="c-lpoll">Check log every (s)</label>
+        <input type="number" id="c-lpoll" name="log_poll_seconds" min="1" max="3600" required>
+      </div>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label for="c-interval">Collection interval (seconds)</label>
+        <input type="number" id="c-interval" name="interval_seconds" min="1" max="86400" required>
+        <small>Default 60. Ignored while 1s mode is on.</small>
+      </div>
+      <div class="field">
+        <label for="c-retention">Retention (hours)</label>
+        <input type="number" id="c-retention" name="retention_hours" min="0.05" step="any" required>
+        <small>Default 24. Older samples are deleted.</small>
+      </div>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="fast_mode" id="c-fast"> High-frequency mode (collect every second)</label>
+    </div>
+    <div class="field">
+      <label for="c-rpc">RPC URL</label>
+      <input type="text" id="c-rpc" name="rpc_url" placeholder="http://127.0.0.1:3030" required>
+      <small>Used for /status, /network_info and JSON-RPC. Point at your own node to see its peers and sync state.</small>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label for="c-vrpc">Validators RPC URL</label>
+        <input type="text" id="c-vrpc" name="validators_rpc_url" placeholder="(same as RPC URL)">
+      </div>
+      <div class="field">
+        <label for="c-vint">Validators query every (s)</label>
+        <input type="number" id="c-vint" name="validators_interval_seconds" min="1" required>
+      </div>
+    </div>
+    <div class="field">
+      <label for="c-acct">Validator account</label>
+      <input type="text" id="c-acct" name="validator_account_id" placeholder="(auto-detect from node) e.g. <pool>.poolv1.near">
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label for="c-disk">Disk path</label>
+        <input type="text" id="c-disk" name="disk_path" placeholder="/">
+        <small>Mount holding your NEAR data.</small>
+      </div>
+      <div class="field">
+        <label for="c-p2p">neard P2P port</label>
+        <input type="number" id="c-p2p" name="p2p_port" min="1" max="65535" required>
+        <small>Checked for inbound firewall access at startup.</small>
+      </div>
+      <div class="field">
+        <label for="c-proc">Process name</label>
+        <input type="text" id="c-proc" name="process_name" placeholder="neard">
+      </div>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="firewall_check_sudo"> Read firewall rules with passwordless sudo</label>
+      <small>Off by default. Only turn on if the service user has passwordless sudo for ufw / iptables / nft / firewall-cmd;
+        otherwise every attempt is logged as a failed sudo login. Without it, the check uses inbound peer connections.</small>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="ping_enabled" id="c-ping"> Ping peers</label>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label for="c-pmethod">Ping method</label>
+        <select id="c-pmethod" name="ping_method">
+          <option value="icmp">ICMP (system ping)</option>
+          <option value="tcp">TCP connect to NEAR port</option>
+        </select>
+        <small>Use TCP if peers block ICMP.</small>
+      </div>
+      <div class="field">
+        <label for="c-pint">Ping every (s)</label>
+        <input type="number" id="c-pint" name="ping_interval_seconds" min="5" required>
+        <small>Not affected by 1s mode.</small>
+      </div>
+    </div>
+    <div class="field">
+      <label for="c-ptimeout">Ping timeout (ms)</label>
+      <input type="number" id="c-ptimeout" name="ping_timeout_ms" min="100" max="10000" required>
+    </div>
+    <div class="actions">
+      <span class="err" id="settingsErr"></span>
+      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" id="saveSettings" value="save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="vendor/chart.umd.min.js"></script>
+<script>
+"use strict";
+// ---------------------------------------------------------------- formatting
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const isNum = v => typeof v === "number" && isFinite(v);
+function fmtBytes(v, d = 1) {
+  if (!isNum(v)) return "—";
+  const u = ["B", "KB", "MB", "GB", "TB", "PB"]; let i = 0, x = Math.abs(v);
+  while (x >= 1024 && i < u.length - 1) { x /= 1024; i++; }
+  return (v < 0 ? "-" : "") + x.toFixed(i === 0 ? 0 : d) + " " + u[i];
+}
+const fmtRate = v => isNum(v) ? fmtBytes(v) + "/s" : "—";
+const fmtPct = (v, d = 1) => isNum(v) ? v.toFixed(d) + "%" : "—";
+function fmtNum(v, d = 0) {
+  if (!isNum(v)) return "—";
+  const a = Math.abs(v);
+  if (a >= 1e9) return (v / 1e9).toFixed(2) + "B";
+  if (a >= 1e6) return (v / 1e6).toFixed(2) + "M";
+  if (a >= 1e4) return (v / 1e3).toFixed(1) + "k";
+  return v.toLocaleString(undefined, { maximumFractionDigits: d });
+}
+const fmtCount = v => isNum(v) ? v.toLocaleString() : "—";
+const fmtNear = v => isNum(v) ? fmtNum(v, 0) + " Ⓝ" : "—";
+function fmtDur(s) {
+  if (!isNum(s)) return "—";
+  if (s < 60) return s.toFixed(s < 10 ? 1 : 0) + "s";
+  if (s < 3600) return Math.round(s / 60) + "m";
+  if (s < 86400) return (s / 3600).toFixed(1) + "h";
+  return (s / 86400).toFixed(1) + "d";
+}
+function fmtUptime(s) {
+  if (!isNum(s)) return "—";
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+}
+// Reboots = changes in boot time across the series (tolerate small clock adjustments).
+function rebootsIn(boots) {
+  const b = (boots || []).filter(isNum);
+  let n = 0;
+  for (let i = 1; i < b.length; i++) if (Math.abs(b[i] - b[i - 1]) > 120) n++;
+  return n;
+}
+function fmtTime(ms, range) {
+  const d = new Date(ms);
+  const opts = range > 86400 ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }
+             : range > 1800 ? { hour: "2-digit", minute: "2-digit" }
+             : { hour: "2-digit", minute: "2-digit", second: "2-digit" };
+  return d.toLocaleString([], opts);
+}
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ---------------------------------------------------------------- trends
+function stats(xs, ys) {
+  const pts = [];
+  for (let i = 0; i < ys.length; i++) if (isNum(ys[i])) pts.push([xs[i], ys[i]]);
+  if (!pts.length) return null;
+  let min = Infinity, max = -Infinity, sum = 0;
+  for (const [, y] of pts) { min = Math.min(min, y); max = Math.max(max, y); sum += y; }
+  const n = pts.length, avg = sum / n;
+  let slope = null; // units per hour, least squares
+  // Only trust a trend once the data spans enough time (≥5 min and ≥10% of the selected range).
+  const span = pts[n - 1][0] - pts[0][0];
+  if (n >= 5 && span >= Math.max(300, rangeSeconds() * 0.1)) {
+    const mx = pts.reduce((a, p) => a + p[0], 0) / n;
+    let num = 0, den = 0;
+    for (const [x, y] of pts) { num += (x - mx) * (y - avg); den += (x - mx) ** 2; }
+    if (den > 0) slope = num / den * 3600;
+  }
+  return { min, max, avg, slope, last: pts[n - 1][1], first: pts[0][1], n };
+}
+
+// ---------------------------------------------------------------- charts
+const crosshair = {
+  id: "crosshair",
+  afterDraw(chart) {
+    const a = chart.tooltip?.getActiveElements?.();
+    if (!a || !a.length) return;
+    const x = a[0].element.x, { top, bottom } = chart.chartArea, ctx = chart.ctx;
+    ctx.save(); ctx.strokeStyle = css("--axis"); ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, bottom); ctx.stroke(); ctx.restore();
+  }
+};
+
+const CHARTS = [];
+/**
+ * def: { id, group, title, sub?, src, series:[{key,label,color,scale?}], fmt, axisFmt?, yMin?, yMax?,
+ *        headline?(latest values) , trend?: (stats, def) => html, extra?: (ctx) => html }
+ */
+function card(def) {
+  const el = document.createElement("div");
+  el.className = "card";
+  el.innerHTML = `
+    <div class="card-h">
+      <div><div class="card-t">${esc(def.title)}</div><div class="card-s" data-sub>${esc(def.sub || "")}</div></div>
+      <div class="card-now" data-now>—</div>
+    </div>
+    ${def.series.length > 1 ? `<div class="legend" data-legend></div>` : ""}
+    <div class="trend" data-trend></div>
+    <div class="chart-box"><canvas aria-label="${esc(def.title)} chart" role="img"></canvas><div class="empty" data-empty>Waiting for data…</div></div>`;
+  document.getElementById("g-" + def.group).appendChild(el);
+  def.el = el;
+  def.chart = new Chart(el.querySelector("canvas"), {
+    type: "line",
+    data: { datasets: def.series.map(s => ({ label: s.label, data: [], parsing: false, spanGaps: false,
+      borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, pointHitRadius: 8,
+      tension: def.stepped ? 0 : 0.15, stepped: def.stepped || false,
+      fill: def.series.length === 1 ? "origin" : false })) },
+    options: {
+      animation: false, maintainAspectRatio: false, normalized: true,
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            title: items => items.length ? new Date(items[0].parsed.x).toLocaleString() : "",
+            label: it => ` ${it.dataset.label}: ${def.fmt(it.parsed.y)}`,
+          },
+        },
+      },
+      scales: {
+        x: { type: "linear", grid: { display: false }, border: {}, ticks: { maxTicksLimit: 6, maxRotation: 0 } },
+        y: { min: def.yMin, max: def.yMax, beginAtZero: def.beginAtZero !== false, grace: def.grace ?? "5%",
+             border: { display: false },
+             ticks: { maxTicksLimit: 5, stepSize: def.stepSize, callback: v => (def.axisFmt || def.fmt)(v) } },
+      },
+    },
+    plugins: [crosshair],
+  });
+  CHARTS.push(def);
+  return def;
+}
+
+function themeCharts() {
+  Chart.defaults.font.family = 'system-ui, -apple-system, "Segoe UI", sans-serif';
+  Chart.defaults.font.size = 11;
+  for (const def of CHARTS) {
+    const o = def.chart.options;
+    o.scales.x.ticks.color = o.scales.y.ticks.color = css("--muted");
+    o.scales.y.grid = { color: css("--grid"), drawTicks: false };
+    o.scales.x.border.color = css("--axis");
+    o.plugins.tooltip.backgroundColor = css("--surface");
+    o.plugins.tooltip.titleColor = css("--text");
+    o.plugins.tooltip.bodyColor = css("--text-2");
+    o.plugins.tooltip.borderColor = css("--border");
+    o.plugins.tooltip.borderWidth = 1;
+    def.chart.data.datasets.forEach((ds, i) => {
+      const c = css(def.series[i].color);
+      ds.borderColor = c; ds.pointBackgroundColor = c; ds.pointBorderColor = css("--surface");
+      ds.backgroundColor = c + "1f";
+    });
+    def.chart.update("none");
+  }
+}
+
+// Insert null points where samples are missing so lines break across outages.
+function toPoints(ts, ys, bucket, scale = 1) {
+  const out = [];
+  for (let i = 0; i < ts.length; i++) {
+    if (i > 0 && ts[i] - ts[i - 1] > bucket * 2.5) out.push({ x: (ts[i - 1] + bucket) * 1000, y: null });
+    out.push({ x: ts[i] * 1000, y: isNum(ys[i]) ? ys[i] * scale : null });
+  }
+  return out;
+}
+
+function trendHtml(s, def, opts = {}) {
+  if (!s) return "";
+  const f = def.fmt;
+  let parts = [`avg ${f(s.avg)}`, `min ${f(s.min)}`, `max ${f(s.max)}`];
+  if (s.slope !== null && opts.slope !== false) {
+    const rel = Math.abs(s.slope) / Math.max(Math.abs(s.avg), 1e-9);
+    const flat = rel < 0.005;
+    const arrow = flat ? "→" : s.slope > 0 ? "↑" : "↓";
+    parts.push(`<span class="${flat ? "" : s.slope > 0 ? "up" : "down"}">${arrow} ${flat ? "flat" : (s.slope > 0 ? "+" : "−") + f(Math.abs(s.slope)) + "/h"}</span>`);
+  }
+  if (opts.extra) parts.push(opts.extra);
+  return parts.map(p => `<span>${p}</span>`).join("");
+}
+
+function renderCharts(data) {
+  const range = data.range;
+  for (const def of CHARTS) {
+    const src = data[def.src];
+    const ts = src.t;
+    let any = false;
+    def.chart.data.datasets.forEach((ds, i) => {
+      const s = def.series[i];
+      ds.data = toPoints(ts, src[s.key], src.bucket || data.bucket, s.scale || 1);
+      if (ds.data.some(p => p.y !== null)) any = true;
+    });
+    def.chart.options.scales.x.min = (data.now - range) * 1000;
+    def.chart.options.scales.x.max = data.now * 1000;
+    def.chart.options.scales.x.ticks.callback = v => fmtTime(v, range);
+    def.chart.update("none");
+    def.el.querySelector("[data-empty]").style.display = any ? "none" : "flex";
+
+    const st = def.series.map(s => stats(ts, (src[s.key] || []).map(v => isNum(v) ? v * (s.scale || 1) : v)));
+    const now = def.headline ? def.headline(st, src) : (st[0] ? def.fmt(st[0].last) : "—");
+    def.el.querySelector("[data-now]").innerHTML = now;
+    const leg = def.el.querySelector("[data-legend]");
+    if (leg) leg.innerHTML = def.series.map((s, i) =>
+      `<span><i style="background:var(${s.color})"></i>${esc(s.label)} <b>${st[i] ? def.fmt(st[i].last) : "—"}</b></span>`).join("");
+    def.el.querySelector("[data-trend]").innerHTML = def.trend ? def.trend(st, def, src) : trendHtml(st[0], def);
+    if (def.subFn) def.el.querySelector("[data-sub]").textContent = def.subFn(src) || def.sub || "";
+  }
+}
+
+const lastOf = (arr) => { if (!arr) return null; for (let i = arr.length - 1; i >= 0; i--) if (isNum(arr[i])) return arr[i]; return null; };
+
+// ---------------------------------------------------------------- chart definitions
+card({ id: "cpu", group: "system", title: "CPU usage", src: "system", fmt: v => fmtPct(v), axisFmt: v => v + "%", yMax: 100,
+  series: [{ key: "cpu_pct", label: "System", color: "--s1" }, { key: "proc_cpu_pct", label: "neard", color: "--s2" }],
+  subFn: src => { const l = lastOf(src.load1); return isNum(l) ? `load avg (1m) ${l.toFixed(2)}` : ""; },
+  trend: (st, def) => trendHtml(st[0], def) });
+card({ id: "mem", group: "system", title: "Memory usage", src: "system", fmt: v => fmtBytes(v), axisFmt: v => fmtBytes(v, 0),
+  series: [{ key: "mem_used", label: "System used", color: "--s1" }, { key: "proc_rss", label: "neard RSS", color: "--s2" }],
+  headline: (st, src) => fmtPct(lastOf(src.mem_pct)),
+  subFn: src => { const t = lastOf(src.mem_total), sw = lastOf(src.swap_pct); return isNum(t) ? `of ${fmtBytes(t)} · swap ${fmtPct(sw)}` : ""; },
+  trend: (st, def) => trendHtml(st[0], def) });
+card({ id: "disk", group: "system", title: "Disk usage", src: "system", fmt: v => fmtBytes(v), axisFmt: v => fmtBytes(v, 0), beginAtZero: false,
+  series: [{ key: "disk_used", label: "Used", color: "--s1" }],
+  headline: (st, src) => fmtPct(lastOf(src.disk_pct)),
+  subFn: src => { const t = lastOf(src.disk_total); return isNum(t) ? `${config?.disk_path || ""} · ${fmtBytes(t)} total` : ""; },
+  trend: (st, def, src) => {
+    const s = st[0]; if (!s) return "";
+    const total = lastOf(src.disk_total);
+    let extra = "";
+    if (s.slope > 0 && isNum(total)) extra = `full in ~${fmtDur((total - s.last) / s.slope * 3600)}`;
+    return trendHtml(s, def, { extra });
+  } });
+card({ id: "diskio", group: "system", title: "Disk I/O", src: "system", fmt: fmtRate, axisFmt: v => fmtBytes(v, 0),
+  series: [{ key: "disk_read_bps", label: "Read", color: "--s1" }, { key: "disk_write_bps", label: "Write", color: "--s2" }],
+  headline: (st) => fmtRate((st[0]?.last || 0) + (st[1]?.last || 0)),
+  trend: (st, def) => `<span>read avg ${fmtRate(st[0]?.avg)}</span><span>write avg ${fmtRate(st[1]?.avg)}</span><span>peak ${fmtRate(Math.max(st[0]?.max || 0, st[1]?.max || 0))}</span>` });
+card({ id: "uptime-sys", group: "system", title: "System uptime", sub: "Time since the machine last booted",
+  src: "system", fmt: fmtUptime, axisFmt: v => fmtDur(v),
+  series: [{ key: "uptime_sec", label: "Uptime", color: "--s1" }],
+  subFn: src => { const b = lastOf(src.boot_time); return isNum(b) ? `booted ${new Date(b * 1000).toLocaleString()}` : ""; },
+  trend: (st, def, src) => {
+    const n = rebootsIn(src.boot_time);
+    return `<span>${n === 0 ? "no reboots" : `<b>${n} reboot${n === 1 ? "" : "s"}</b>`} in range</span>` +
+      (st[0] ? `<span>longest ${fmtUptime(st[0].max)}</span>` : "");
+  } });
+card({ id: "net", group: "system", title: "Network (host)", src: "system", fmt: fmtRate, axisFmt: v => fmtBytes(v, 0),
+  series: [{ key: "net_recv_bps", label: "In", color: "--s1" }, { key: "net_sent_bps", label: "Out", color: "--s2" }],
+  headline: (st) => fmtRate((st[0]?.last || 0) + (st[1]?.last || 0)),
+  trend: (st) => `<span>in avg ${fmtRate(st[0]?.avg)}</span><span>out avg ${fmtRate(st[1]?.avg)}</span><span>peak ${fmtRate(Math.max(st[0]?.max || 0, st[1]?.max || 0))}</span>` });
+
+// Each bucket's value is the share of samples in it that were synced (0–100%).
+function syncRuns(ts, ys, bucket) {
+  let drops = 0, longest = 0, run = 0, total = 0, synced = 0;
+  for (let i = 0; i < ys.length; i++) {
+    if (!isNum(ys[i])) continue;
+    total++; synced += ys[i];
+    if (ys[i] < 99.95) { if (run === 0) drops++; run += bucket * (1 - ys[i] / 100); longest = Math.max(longest, run); }
+    else run = 0;
+  }
+  return { drops, longest, pct: total ? synced / total : null };
+}
+function syncState() {
+  const L = latest || {}, lag = lastOf(lastData?.near?.block_lag_sec);
+  if (L.error) return ["--critical", "✕ RPC unreachable"];
+  if (L.syncing) return ["--warning", "⟳ Syncing"];
+  if (isNum(lag) && lag > SYNC_LAG_LIMIT) return ["--serious", "! Behind " + fmtDur(lag)];
+  if (L.block_height) return ["--good", "✓ Synced"];
+  return null;
+}
+const SYNC_LAG_LIMIT = 30; // keep in step with SYNC_LAG_THRESHOLD_SEC in server.py
+card({ id: "sync", group: "node", title: "Sync status",
+  sub: `Share of samples where the node was synced (RPC up, not syncing, lag ≤ ${SYNC_LAG_LIMIT}s)`, src: "near",
+  fmt: v => fmtPct(v), axisFmt: v => v + "%", yMax: 100, stepped: true,
+  series: [{ key: "synced", label: "Synced", color: "--s1", scale: 100 }],
+  headline: () => { const s = syncState(); return s ? `<span style="display:inline-flex;align-items:center;gap:6px;font-size:15px"><span class="dot" style="background:var(${s[0]})"></span>${esc(s[1])}</span>` : "—"; },
+  trend: (st, def, src) => {
+    const r = syncRuns(src.t, (src.synced || []).map(v => isNum(v) ? v * 100 : v), lastData.bucket);
+    if (r.pct === null) return "";
+    return `<span>synced <b>${fmtPct(r.pct, 2)}</b> of range</span>` +
+      `<span>${r.drops} ${r.drops === 1 ? "drop" : "drops"}</span>` +
+      (r.drops ? `<span>longest ~${fmtDur(r.longest)}</span>` : "");
+  } });
+card({ id: "logs", group: "node", title: "Service log warnings & errors", sub: "neard WARN / ERROR lines per time bucket",
+  src: "logs", fmt: v => isNum(v) ? fmtNum(v, 0) : "—", stepped: true,
+  series: [{ key: "warn", label: "⚠ Warnings", color: "--warning" }, { key: "error", label: "✕ Errors", color: "--critical" }],
+  headline: () => logs ? `${fmtNum(logs.counts.WARN + logs.counts.ERROR)} <span style="font-size:12px;font-weight:400;color:var(--text-2)">lines</span>` : "—",
+  trend: () => {
+    if (!logs) return "";
+    const s = logs.status;
+    if (!s.enabled) return `<span>log collection is off</span>`;
+    if (s.ok === false) return `<span>✕ can't read log: ${esc(s.error)}</span>`;
+    const top = [...logs.groups].sort((a, b) => b.count - a.count)[0];
+    return `<span>${fmtNum(logs.counts.WARN)} warnings · ${fmtNum(logs.counts.ERROR)} errors in range</span>` +
+      (top ? `<span>most frequent: ${esc(((top.target ? top.target + ": " : "") + top.message).slice(0, 70))}… (${fmtNum(top.count)})</span>` : "");
+  } });
+card({ id: "bps", group: "node", title: "Block rate", sub: "Blocks per second observed by the node", src: "near",
+  fmt: v => isNum(v) ? v.toFixed(2) + " /s" : "—", axisFmt: v => v.toFixed(1),
+  series: [{ key: "blocks_per_sec", label: "Blocks/s", color: "--s1" }] });
+card({ id: "lag", group: "node", title: "Block lag", sub: "Time since the node's latest block", src: "near",
+  fmt: fmtDur, series: [{ key: "block_lag_sec", label: "Lag", color: "--s1" }] });
+card({ id: "peers", group: "node", title: "Active peers", src: "near", fmt: v => fmtNum(v, 0),
+  series: [{ key: "peers", label: "Peers", color: "--s1" }],
+  subFn: src => { const m = lastOf(src.max_peers); return isNum(m) ? `max ${m}` : ""; } });
+card({ id: "p2p", group: "node", title: "NEAR P2P traffic", sub: "As reported by /network_info", src: "near", fmt: fmtRate, axisFmt: v => fmtBytes(v, 0),
+  series: [{ key: "near_recv_bps", label: "Received", color: "--s1" }, { key: "near_sent_bps", label: "Sent", color: "--s2" }],
+  headline: (st) => fmtRate((st[0]?.last || 0) + (st[1]?.last || 0)),
+  trend: (st) => `<span>recv avg ${fmtRate(st[0]?.avg)}</span><span>sent avg ${fmtRate(st[1]?.avg)}</span>` });
+card({ id: "version", group: "node", title: "neard version & protocol",
+  sub: "Network protocol vs the newest protocol this neard binary supports", src: "near",
+  fmt: v => isNum(v) ? String(Math.round(v)) : "—", axisFmt: v => Number.isInteger(v) ? String(v) : "",
+  beginAtZero: false, stepped: true, stepSize: 1, grace: 1,
+  series: [{ key: "protocol_version", label: "Network protocol", color: "--s1" },
+           { key: "latest_protocol_version", label: "Binary supports", color: "--s2" }],
+  headline: () => latest?.version ? `<span style="font-size:15px">neard ${esc(latest.version)}</span>` : "—",
+  subFn: () => {
+    const L = latest || {};
+    if (!L.protocol_version) return "";
+    if (L.latest_protocol_version > L.protocol_version)
+      return `Binary supports protocol ${L.latest_protocol_version}; network is on ${L.protocol_version} (ready for the upgrade)`;
+    if (L.latest_protocol_version < L.protocol_version)
+      return `Binary only supports protocol ${L.latest_protocol_version} but the network is on ${L.protocol_version}: upgrade neard`;
+    return `Protocol ${L.protocol_version} · binary is up to date with the network`;
+  },
+  trend: () => {
+    const vs = lastData?.versions || [];
+    if (!vs.length) return "";
+    const label = v => `${esc(v.version)}${v.build && v.build !== v.version ? ` (${esc(v.build)})` : ""} · p${esc(v.protocol_version)}`;
+    const changes = vs.filter(v => !v.before_range);
+    const startRow = vs.find(v => v.before_range);
+    if (!changes.length || (changes.length === 1 && !startRow)) {
+      const v = vs[vs.length - 1];
+      return `<span>${label(v)} since ${new Date(v.ts * 1000).toLocaleString()}</span><span>no changes in range</span>`;
+    }
+    const items = changes.slice(-4).map(v => `<span>→ ${label(v)} at ${fmtTime(v.ts * 1000, lastData.range)}</span>`);
+    return (startRow ? `<span>started on ${label(startRow)}</span>` : "") + items.join("") +
+      (changes.length > 4 ? `<span>+${changes.length - 4} earlier changes</span>` : "");
+  } });
+card({ id: "churn", group: "node", title: "Peer churn", sub: "Peers joining and leaving per time bucket", src: "near",
+  fmt: v => isNum(v) ? fmtNum(v, 0) : "—", stepped: true,
+  series: [{ key: "peer_joins", label: "Joined", color: "--s1" }, { key: "peer_leaves", label: "Left", color: "--s2" }],
+  headline: () => peers?.churn ? `${fmtNum(peers.churn.joins + peers.churn.leaves)} <span style="font-size:12px;font-weight:400;color:var(--text-2)">events</span>` : "—",
+  trend: () => {
+    const c = peers?.churn; if (!c) return "";
+    const top = c.top_reconnects.map(t => `${esc(t.name || String(t.peer_id).slice(0, 14))} (${esc(t.joins)})`).join(", ");
+    return `<span>${esc(c.joins)} joined · ${esc(c.leaves)} left in range</span>` +
+      (top ? `<span>most reconnects: ${top}</span>` : `<span>no repeat reconnects</span>`);
+  } });
+card({ id: "peerping", group: "node", title: "Peer ping", sub: "Round-trip time across all active peers", src: "ping",
+  fmt: v => isNum(v) ? v.toFixed(0) + " ms" : "—",
+  series: [{ key: "median_ms", label: "Median", color: "--s1" }, { key: "p90_ms", label: "90th percentile", color: "--s2" }],
+  trend: (st, def, src) => {
+    const loss = stats(src.t, src.loss_pct), lastPeers = lastOf(src.peers), lastReplied = lastOf(src.replied);
+    return (st[0] ? `<span>median avg ${def.fmt(st[0].avg)}</span>` : "") +
+      (loss ? `<span>loss avg ${fmtPct(loss.avg)} · max ${fmtPct(loss.max)}</span>` : "") +
+      (isNum(lastPeers) ? `<span>${esc(lastReplied)}/${esc(lastPeers)} replied last round</span>` : "");
+  } });
+card({ id: "latency", group: "node", title: "RPC latency", sub: "Round trip for /status", src: "near",
+  fmt: v => isNum(v) ? v.toFixed(0) + " ms" : "—", series: [{ key: "rpc_latency_ms", label: "Latency", color: "--s1" }] });
+
+card({ id: "uptime", group: "validator", title: "Production this epoch", sub: "Produced ÷ expected", src: "near",
+  fmt: v => fmtPct(v, 2), axisFmt: v => v + "%", beginAtZero: false, yMax: 100,
+  series: [{ key: "blocks_pct", label: "Blocks", color: "--s1" }, { key: "chunks_pct", label: "Chunks", color: "--s2" },
+           { key: "endorsements_pct", label: "Endorsements", color: "--s3" }],
+  headline: (st) => { const v = st.filter(Boolean).map(s => s.last); return v.length ? fmtPct(v.reduce((a, b) => a + b) / v.length, 2) : "—"; },
+  trend: (st, def, src) => {
+    const p = k => `${fmtNum(lastOf(src[k + "_produced"]))}/${fmtNum(lastOf(src[k + "_expected"]))}`;
+    return `<span>blocks ${p("blocks")}</span><span>chunks ${p("chunks")}</span><span>endorsements ${p("endorsements")}</span>`;
+  } });
+card({ id: "stake", group: "validator", title: "Stake vs seat price", src: "near", fmt: fmtNear, axisFmt: v => fmtNum(v), yMin: 0,
+  series: [{ key: "stake", label: "Your stake", color: "--s1" }, { key: "seat_price", label: "Seat price", color: "--s2" }],
+  sub: "Seat price ≈ lowest stake in the active set",
+  headline: (st) => st[0] && st[1] ? `${(st[0].last / st[1].last).toFixed(2)}×` : "—",
+  trend: (st) => {
+    if (!st[0]) return `<span>Set a validator account to compare stake.</span>`;
+    const d = st[0].last - st[0].first;
+    return `<span>stake change ${d >= 0 ? "+" : "−"}${fmtNear(Math.abs(d))}</span>` + (st[1] ? `<span>margin ${fmtNear(st[0].last - st[1].last)}</span>` : "");
+  } });
+card({ id: "epoch", group: "validator", title: "Epoch progress", src: "near", fmt: v => fmtPct(v), axisFmt: v => v + "%", yMax: 100,
+  series: [{ key: "epoch_progress_pct", label: "Progress", color: "--s1" }],
+  subFn: src => { const e = lastOf(src.epoch_height); return isNum(e) ? `epoch ${e}` : ""; },
+  trend: () => latest?.epoch_blocks_remaining != null ? `<span>${fmtNum(latest.epoch_blocks_remaining)} blocks remaining</span>` : "" });
+
+// ---------------------------------------------------------------- tiles / header
+let config = null, latest = null, lastData = null;
+
+function tile(k, v, d = "", barPct = null) {
+  return `<div class="tile"><div class="k">${esc(k)}</div><div class="v">${v}</div>` +
+    (d ? `<div class="d" title="${d.replace(/<[^>]*>/g, "")}">${d}</div>` : "") +
+    (barPct !== null ? `<div class="bar"><i style="width:${Math.max(0, Math.min(100, barPct))}%"></i></div>` : "") + `</div>`;
+}
+function statusPill(color, label) {
+  return `<span class="dot" style="background:var(${color})"></span>${esc(label)}`;
+}
+
+// Node name: the validator account if there is one (configured or reported by the node),
+// otherwise the server's hostname. Shown in the heading and first in the browser tab title.
+function renderNodeName(L) {
+  const name = L.validator_account_id || L.server_hostname || "";
+  const el = document.getElementById("nodeName");
+  el.textContent = name;
+  el.hidden = !name;
+  el.title = L.validator_account_id && L.server_hostname ? `server: ${L.server_hostname}` : "";
+  const title = name ? `${name} · Near Node Dashboard` : "Near Node Dashboard";
+  if (document.title !== title) document.title = title;
+}
+
+function renderHeader() {
+  const L = latest || {}, n = lastData?.near || {}, s = lastData?.system || {};
+  renderNodeName(L);
+  const health = document.getElementById("health");
+  const lag = lastOf(n.block_lag_sec);
+  const state = syncState();
+  if (state) {
+    const r = lastData ? syncRuns(n.t, (n.synced || []).map(v => isNum(v) ? v * 100 : v), lastData.bucket) : {};
+    health.innerHTML = statusPill(state[0], state[1]) +
+      (isNum(r.pct) ? `<span style="font-weight:400;color:var(--text-2)">· ${fmtPct(r.pct, 1)} synced</span>` : "");
+    health.title = "Current sync state · share of samples synced in the selected range";
+  }
+
+  const sub = [];
+  if (L.chain_id) sub.push(esc(L.chain_id));
+  if (L.version) sub.push("neard " + esc(L.version));
+  if (L.protocol_version) sub.push("protocol " + esc(L.protocol_version) + (L.latest_protocol_version && L.latest_protocol_version !== L.protocol_version ? ` (latest ${esc(L.latest_protocol_version)})` : ""));
+  if (L.node_uptime_sec) sub.push("node up " + fmtDur(L.node_uptime_sec));
+  if (config) sub.push(`collecting every ${config.fast_mode ? 1 : config.interval_seconds}s · keep ${config.retention_hours}h`);
+  if (lastData) sub.push("updated " + new Date(lastData.now * 1000).toLocaleTimeString());
+  document.getElementById("sub").innerHTML = sub.map(x => `<span>${x}</span>`).join("");
+
+  const banner = document.getElementById("banner");
+  const errs = [L.error, L.network_info_error && "network_info: " + L.network_info_error, L.validators_error && "validators: " + L.validators_error,
+    L.host_checks?.counts?.fail && `Host checks: ${L.host_checks.counts.fail} failed at service start (see NEAR node → Host checks).`,
+    L.validators_stale && `Validator data is stale: last successful fetch ${fmtDur(Date.now() / 1000 - L.validators_fetched_at)} ago. Validator figures may be out of date.`,
+    L.rpc_nodes_seen > 1 && `This RPC URL is load-balanced: ${L.rpc_nodes_seen} different nodes answered in recent samples. ` +
+      `Peers, churn, peer ping and sync stats mix data from different nodes. Point the RPC URL at a single node (your own) for accurate data.`].filter(Boolean);
+  banner.innerHTML = errs.map(esc).join("<br>") + (errs.length ? `<br><span style="color:var(--muted)">RPC: ${esc(L.rpc_url || "")}</span>` : "");
+  banner.classList.toggle("show", errs.length > 0);
+
+  let vStatus = esc(L.validator_status || "—"), vDetail = esc(L.validator_account_id || "no account configured");
+  if (L.kickout_reason) vDetail += " · kicked last epoch: " + esc(Object.keys(L.kickout_reason)[0]);
+  else if (L.validator_status === "Active") vDetail += (L.in_next_epoch ? " · in next epoch" : " · NOT in next epoch");
+  const uptime = isNum(L.uptime_pct) ? fmtPct(L.uptime_pct, 2) : "—";
+  const stake = lastOf(n.stake), seat = lastOf(n.seat_price);
+  const ep = lastOf(n.epoch_progress_pct);
+  document.getElementById("tiles").innerHTML = [
+    tile("Validator", vStatus, vDetail),
+    tile("Uptime this epoch", uptime, L.rank ? `rank #${esc(L.rank)} of ${esc(lastOf(n.num_validators))}` : ""),
+    tile("Stake", fmtNear(stake), isNum(seat) ? `seat price ${fmtNear(seat)}` : ""),
+    tile("Epoch " + (lastOf(n.epoch_height) ?? ""), fmtPct(ep), L.epoch_blocks_remaining != null ? `${fmtNum(L.epoch_blocks_remaining)} blocks left · ~${fmtDur(L.epoch_blocks_remaining / (lastOf(n.blocks_per_sec) || 1.1))}` : "", isNum(ep) ? ep : null),
+    tile("Block height", isNum(L.block_height) ? L.block_height.toLocaleString() : fmtNum(lastOf(n.block_height)), isNum(lag) ? `lag ${fmtDur(lag)}` : ""),
+    tile("Peers", fmtNum(lastOf(n.peers)), isNum(lastOf(n.max_peers)) ? `of ${lastOf(n.max_peers)} max` : ""),
+    tile("CPU", fmtPct(lastOf(s.cpu_pct)), isNum(lastOf(s.proc_cpu_pct)) ? `neard ${fmtPct(lastOf(s.proc_cpu_pct))}` : "", lastOf(s.cpu_pct)),
+    tile("Memory", fmtPct(lastOf(s.mem_pct)), `${fmtBytes(lastOf(s.mem_used))} of ${fmtBytes(lastOf(s.mem_total))}`, lastOf(s.mem_pct)),
+    tile("Disk", fmtPct(lastOf(s.disk_pct)), `${fmtBytes(lastOf(s.disk_used))} of ${fmtBytes(lastOf(s.disk_total))}`, lastOf(s.disk_pct)),
+    tile("System uptime", fmtUptime(lastOf(s.uptime_sec)),
+      isNum(lastOf(s.boot_time)) ? `since ${new Date(lastOf(s.boot_time) * 1000).toLocaleDateString([], { month: "short", day: "numeric" })}` +
+        (rebootsIn(s.boot_time) ? ` · ${rebootsIn(s.boot_time)} reboot(s) in range` : "") : ""),
+  ].join("");
+}
+
+// ---------------------------------------------------------------- peers table
+let peers = null, peerSort = { key: "stake", dir: -1 };
+try { const s = JSON.parse(localStorage.getItem("nvs-peer-sort")); if (s?.key) peerSort = s; } catch {}
+
+function peerSortValue(p, key) {
+  if (key === "blocks" || key === "chunks" || key === "endorsements") return p[key]?.pct ?? null;
+  if (key.startsWith("ping_")) {
+    const f = { ping_last: "last", ping_avg: "avg", ping_min: "min", ping_jitter: "jitter", ping_loss: "loss_pct" }[key];
+    return p.ping?.[f] ?? null;
+  }
+  if (key === "session") {
+    // Connected peers rank by session length; disconnected ones after them, most recent first.
+    const now = peers.now;
+    return p.connected ? (p.connected_since ? now - p.connected_since : 0) + 1e9 : -(now - p.last_seen);
+  }
+  if (key === "ip") return p.ip ? p.ip.split(".").map(n => n.padStart(3, "0")).join(".") : null;
+  return p[key] ?? null;
+}
+function pctCell(s) {
+  if (!s || !s.expected) return `<td class="num"><span class="muted">${s ? "0 expected" : "—"}</span></td>`;
+  const icon = s.pct < 80 ? `<span style="color:var(--critical)" title="Below 80%">✕</span> `
+             : s.pct < 95 ? `<span style="color:var(--warning)" title="Below 95%">⚠</span> ` : "";
+  return `<td class="num"><span class="${icon ? "pct-warn" : ""}">${icon}${fmtPct(s.pct, 2)}</span><br>` +
+         `<span class="muted">${fmtCount(s.produced)} / ${fmtCount(s.expected)}</span></td>`;
+}
+const fmtMs = v => isNum(v) ? (v < 10 ? v.toFixed(1) : v.toFixed(0)) + " ms" : "—";
+// The x-axis spans the whole selected range (same for every row), and the line breaks wherever
+// a bucket has no pings, e.g. while the peer was disconnected, instead of joining across the gap.
+function sparkline(trend, t0, t1, bucket) {
+  if (!trend || !trend.length) return `<span class="muted">—</span>`;
+  const W = 96, H = 24, P = 2;
+  const vals = trend.map(t => t[1]).filter(isNum);
+  if (!vals.length) return `<span class="muted">no replies</span>`;
+  const lo = Math.min(...vals), hi = Math.max(...vals), span = hi - lo || 1;
+  const x = t => P + Math.max(0, Math.min(1, (t + bucket / 2 - t0) / ((t1 - t0) || 1))) * (W - 2 * P);
+  const y = v => vals.length === 1 || hi === lo ? H / 2 : H - P - (v - lo) / span * (H - 2 * P);
+  let d = "", pen = false, marks = "", prevT = null;
+  for (const [t, v, lost] of trend) {
+    if (prevT !== null && t - prevT > bucket * 1.5) pen = false;  // missing buckets -> gap
+    if (isNum(v)) { d += `${pen ? "L" : "M"}${x(t).toFixed(1)},${y(v).toFixed(1)}`; pen = true; }
+    else pen = false;
+    if (lost) marks += `<circle cx="${x(t).toFixed(1)}" cy="${H - P}" r="2" fill="var(--critical)"/>`;
+    prevT = t;
+  }
+  // An isolated point has no neighbour to draw a line to, so give it a dot to keep it visible.
+  for (const seg of d.split("M").filter(s => s && !s.includes("L"))) {
+    const [cx, cy] = seg.split(",");
+    marks += `<circle cx="${cx}" cy="${cy}" r="1.5" fill="var(--s1)"/>`;
+  }
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" role="img" aria-label="Ping trend ${fmtMs(lo)} to ${fmtMs(hi)}">` +
+    `<path d="${d}" fill="none" stroke="var(--s1)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>${marks}` +
+    `<title>${fmtMs(lo)} – ${fmtMs(hi)}${marks ? " · red dots = lost pings" : ""}</title></svg>`;
+}
+function pingCells(pg) {
+  if (!pg) return `<td class="num muted" colspan="5">not pinged yet</td><td></td>`;
+  const lossIcon = pg.loss_pct >= 100 ? `<span style="color:var(--critical)">✕</span> ` : pg.loss_pct > 5 ? `<span style="color:var(--warning)">⚠</span> ` : "";
+  const last = isNum(pg.last) ? fmtMs(pg.last) : `<span style="color:var(--critical)">✕</span> timeout`;
+  return `<td class="num">${last}</td>
+    <td class="num">${fmtMs(pg.avg)}</td>
+    <td class="num">${fmtMs(pg.min)}<br><span class="muted">${fmtMs(pg.max)}</span></td>
+    <td class="num">${fmtMs(pg.jitter)}</td>
+    <td class="num"><span class="${lossIcon ? "pct-warn" : ""}">${lossIcon}${fmtPct(pg.loss_pct, 1)}</span><br><span class="muted">${esc(pg.received)}/${esc(pg.sent)}</span></td>
+    <td>${sparkline(pg.trend, peers.now - peers.range, peers.now, peers.ping?.bucket || 60)}</td>`;
+}
+function sessionCell(p) {
+  const now = peers.now;
+  const rc = p.reconnects > 1 ? `<br><span class="muted">${p.reconnects} reconnects</span>`
+           : p.reconnects === 1 && p.first_seen && p.first_seen < now - peers.range ? `<br><span class="muted">reconnected</span>` : "";
+  if (p.connected) {
+    return `<td>${p.connected_since ? fmtDur(now - p.connected_since) : "—"}${rc}</td>`;
+  }
+  return `<td><span title="Last seen ${new Date(p.last_seen * 1000).toLocaleString()}">left ${fmtDur(now - p.last_seen)} ago</span>${rc}</td>`;
+}
+function renderPeers() {
+  const tbody = document.querySelector("#peerTable tbody");
+  if (!peers) return;
+  const q = document.getElementById("peerSearch").value.trim().toLowerCase();
+  const onlyV = document.getElementById("peerValidatorsOnly").checked;
+  const showGone = document.getElementById("peerShowGone").checked;
+  let rows = peers.peers.filter(p => (!onlyV || p.account_id) && (showGone || p.connected) &&
+    (!q || [p.account_id, p.ip, p.peer_id].some(v => v && v.toLowerCase().includes(q))));
+  const { key, dir } = peerSort;
+  rows.sort((a, b) => {
+    const x = peerSortValue(a, key), y = peerSortValue(b, key);
+    if (x === null && y === null) return 0;
+    if (x === null) return 1; if (y === null) return -1;   // empty values always last
+    return (x < y ? -1 : x > y ? 1 : 0) * dir;
+  });
+  document.querySelectorAll("#peerTable th[data-sort]").forEach(th => {
+    th.querySelector(".arrow")?.remove();
+    th.setAttribute("aria-sort", th.dataset.sort === key ? (dir > 0 ? "ascending" : "descending") : "none");
+    if (th.dataset.sort === key) th.insertAdjacentHTML("beforeend", `<span class="arrow">${dir > 0 ? "▲" : "▼"}</span>`);
+  });
+  const named = peers.peers.filter(p => p.account_id && p.connected).length;
+  document.getElementById("peerCount").textContent =
+    `${rows.length} shown · ${peers.count} active peers · ${named} validators · ${peers.disconnected} disconnected` +
+    (peers.time ? ` · updated ${new Date(peers.time * 1000).toLocaleTimeString()}` : "");
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="13" class="muted">${config && config.collect_peers === false ? "Peer collection is turned off (Settings → Data collection)."
+      : peers.count ? "No peers match the filter." : "No peer data yet (needs /network_info)."}</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = rows.map(p => {
+    const tag = (!p.connected ? `<span class="tag">disconnected</span>` : "") +
+      (p.validator === "next" ? `<span class="tag">next epoch</span>` : p.slashed ? `<span class="tag">slashed</span>` : "");
+    const name = p.account_id ? `${esc(p.account_id)}${tag}`
+      : `<span class="muted">unknown</span>${tag}`;
+    return `<tr class="${p.connected ? "" : "gone"}">
+      <td>${name}<br><span class="muted mono" title="${esc(p.peer_id)}">${esc((p.peer_id || "").slice(0, 20))}…</span></td>
+      <td><span class="mono">${esc(p.ip || "—")}</span>${p.port ? `<span class="muted mono">:${esc(p.port)}</span>` : ""}</td>
+      ${sessionCell(p)}
+      <td class="num">${p.stake != null ? fmtNear(p.stake) : `<span class="muted">—</span>`}</td>
+      ${pctCell(p.blocks)}${pctCell(p.chunks)}${pctCell(p.endorsements)}
+      ${pingCells(p.ping)}
+    </tr>`;
+  }).join("");
+  const pi = peers.ping || {}, lr = pi.last_round;
+  document.getElementById("pingInfo").textContent = !pi.enabled ? "Peer pinging is off (Settings)."
+    : `Method: ${pi.method === "tcp" ? "TCP connect to the peer's port" : "ICMP"}, one round every ${pi.interval}s` +
+      (lr ? `, last round ${new Date(lr.time * 1000).toLocaleTimeString()}: ${lr.replied}/${lr.peers} replied.` : ", first round pending.") +
+      (pi.error ? ` Error: ${pi.error}` : "");
+}
+document.querySelector("#peerTable thead").addEventListener("click", e => {
+  const th = e.target.closest("th[data-sort]"); if (!th) return;
+  const key = th.dataset.sort;
+  peerSort = { key, dir: peerSort.key === key ? -peerSort.dir : (key === "account_id" || key === "ip" ? 1 : -1) };
+  try { localStorage.setItem("nvs-peer-sort", JSON.stringify(peerSort)); } catch {}
+  renderPeers();
+});
+document.getElementById("peerSearch").addEventListener("input", renderPeers);
+document.getElementById("peerValidatorsOnly").addEventListener("change", renderPeers);
+document.getElementById("peerShowGone").addEventListener("change", renderPeers);
+
+// ---------------------------------------------------------------- host checks (run once at service start)
+const CHECK_BADGE = {
+  pass: ["--good", "✓", "Pass"], warn: ["--warning", "⚠", "Warning"],
+  fail: ["--critical", "✕", "Fail"], na: ["--muted", "–", "N/A"],
+};
+function renderChecks(hc) {
+  const st = document.getElementById("checkStatus"), tbody = document.querySelector("#checkTable tbody");
+  if (!hc || !hc.time) { st.textContent = "running…"; return; }
+  const c = hc.counts || {};
+  st.textContent = `checked at service start, ${new Date(hc.time * 1000).toLocaleString()} on ${hc.hostname}` +
+    ` · ${c.pass || 0} passed` + (c.warn ? ` · ${c.warn} warnings` : "") + (c.fail ? ` · ${c.fail} failed` : "") +
+    (c.na ? ` · ${c.na} not applicable` : "") + " · restart the dashboard to re-check";
+  let group = null;
+  tbody.innerHTML = hc.items.map(i => {
+    const [color, icon, label] = CHECK_BADGE[i.status] || CHECK_BADGE.na;
+    const head = i.group !== group ? `<tr class="grp"><td colspan="5">${esc(i.group)}</td></tr>` : "";
+    group = i.group;
+    return head + `<tr>
+      <td><span class="mono">${esc(i.title)}</span></td>
+      <td><span class="lvl"><i style="color:var(${color})">${icon}</i>${label}</span></td>
+      <td><span class="mono">${esc(i.actual ?? "—")}</span></td>
+      <td><span class="mono">${esc(i.expected ?? "—")}</span></td>
+      <td class="detail">${esc(i.detail || "")}</td>
+    </tr>`;
+  }).join("");
+}
+
+// ---------------------------------------------------------------- service log
+let logs = null, logLevel = "all";
+const lvlBadge = l => l === "ERROR"
+  ? `<span class="lvl"><i style="color:var(--critical)">✕</i>ERROR</span>`
+  : `<span class="lvl"><i style="color:var(--warning)">⚠</i>WARN</span>`;
+let logsSeq = 0;
+async function loadLogs() {
+  const seq = ++logsSeq;
+  const q = encodeURIComponent(document.getElementById("logSearch").value.trim());
+  const body = await getJSON(`/api/logs?range=${rangeSeconds()}&level=${logLevel}&q=${q}`);
+  if (seq === logsSeq) logs = body;  // ignore responses that arrive after a newer request
+}
+function renderLogs() {
+  if (!logs) return;
+  const s = logs.status, st = document.getElementById("logStatus");
+  const src = s.source === "journald" ? `journald unit ${s.target || "neard"}` : `file ${s.target || "(not set)"}`;
+  st.innerHTML = !s.enabled ? "collection off (Settings → Data collection)"
+    : s.ok === false ? `<span style="color:var(--critical)">✕</span> ${esc(s.error)}`
+    : `${esc(src)}` + (s.last_read ? ` · checked ${new Date(s.last_read * 1000).toLocaleTimeString()}` : " · waiting for first read") +
+      (s.warning ? ` · <span style="color:var(--warning)">⚠</span> ${esc(s.warning)}` : "");
+  const grouped = document.getElementById("logGroup").checked;
+  const rows = grouped ? logs.groups : logs.recent;
+  const thead = document.querySelector("#logTable thead"), tbody = document.querySelector("#logTable tbody");
+  thead.innerHTML = grouped
+    ? `<tr><th>Level</th><th class="num">Count</th><th>Last seen</th><th>Target</th><th>Message (latest example)</th></tr>`
+    : `<tr><th>Time</th><th>Level</th><th>Target</th><th>Message</th></tr>`;
+  document.getElementById("logCount").textContent =
+    `${fmtNum(logs.counts.WARN)} warnings · ${fmtNum(logs.counts.ERROR)} errors in range` +
+    (rows.length >= 200 ? " · showing latest 200" : "");
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td colspan="5" class="muted">${s.ok === false || !s.enabled ? "No log data." :
+      "No warnings or errors in this range" + (logLevel !== "all" || document.getElementById("logSearch").value ? " matching the filter." : ".")}</td></tr>`;
+    return;
+  }
+  const msgCell = r => `<td class="msgcell"><div class="msg" title="Click to expand">${esc(r.message)}</div></td>`;
+  tbody.innerHTML = rows.map(r => grouped
+    ? `<tr><td>${lvlBadge(r.level)}</td><td class="num">${fmtNum(r.count)}</td>
+         <td>${fmtDur(Date.now() / 1000 - r.last)} ago${r.count > 1 ? `<br><span class="muted">first ${fmtDur(Date.now() / 1000 - r.first)} ago</span>` : ""}</td>
+         <td><span class="mono">${esc(r.target)}</span></td>${msgCell(r)}</tr>`
+    : `<tr><td><span title="${new Date(r.ts * 1000).toLocaleString()}">${new Date(r.ts * 1000).toLocaleTimeString()}</span></td>
+         <td>${lvlBadge(r.level)}</td><td><span class="mono">${esc(r.target)}</span></td>${msgCell(r)}</tr>`).join("");
+}
+document.querySelector("#logTable").addEventListener("click", e => {
+  const m = e.target.closest(".msg"); if (m) m.classList.toggle("open");
+});
+document.getElementById("logLevel").addEventListener("click", async e => {
+  const b = e.target.closest("button"); if (!b) return;
+  logLevel = b.dataset.l;
+  document.querySelectorAll("#logLevel button").forEach(x => x.setAttribute("aria-pressed", String(x === b)));
+  await loadLogs(); renderLogs();
+});
+let logSearchTimer = null;
+document.getElementById("logSearch").addEventListener("input", () => {
+  clearTimeout(logSearchTimer);
+  logSearchTimer = setTimeout(async () => { await loadLogs(); renderLogs(); }, 300);
+});
+document.getElementById("logGroup").addEventListener("change", renderLogs);
+
+// ---------------------------------------------------------------- same-shard validators
+let shard = null, shardSort = { key: "chunks", dir: -1 };
+try { const s = JSON.parse(localStorage.getItem("nvs-shard-sort")); if (s?.key) shardSort = s; } catch {}
+try { document.getElementById("shardEndorsers").checked = localStorage.getItem("nvs-shard-endorsers") === "1"; } catch {}
+
+function shardSortValue(r, key) {
+  if (key === "blocks" || key === "chunks" || key === "endorsements") return r[key]?.pct ?? null;
+  if (key === "role") return r.producer ? 0 : 1;
+  if (key === "ping") return r.peer?.ping_avg ?? null;
+  return r[key] ?? null;
+}
+function renderShard() {
+  const empty = document.getElementById("shardEmpty"), box = document.getElementById("shardBox");
+  if (!shard) return;
+  if (!shard.is_validator) {
+    box.hidden = true;
+    empty.textContent = `Not shown: ${shard.reason}. This table appears when the node is an active validator; set the validator account in Settings.`;
+    document.getElementById("shardTitle").textContent = "Validators on your shard";
+    return;
+  }
+  box.hidden = false; empty.textContent = "";
+  const multi = shard.shards.length > 1;
+  document.getElementById("shardTitle").textContent =
+    `Validators on your shard${multi ? "s" : ""} (${shard.shards.join(", ")})`;
+  const { key, dir } = shardSort;
+  const rows = [...shard.rows].sort((a, b) => {
+    if (multi && key !== "shard" && a.shard !== b.shard) return a.shard - b.shard;  // keep shards grouped
+    const x = shardSortValue(a, key), y = shardSortValue(b, key);
+    if (x === null && y === null) return 0;
+    if (x === null) return 1; if (y === null) return -1;
+    return (x < y ? -1 : x > y ? 1 : 0) * dir;
+  });
+  document.querySelectorAll("#shardTable th[data-sort]").forEach(th => {
+    th.querySelector(".arrow")?.remove();
+    th.setAttribute("aria-sort", th.dataset.sort === key ? (dir > 0 ? "ascending" : "descending") : "none");
+    if (th.dataset.sort === key) th.insertAdjacentHTML("beforeend", `<span class="arrow">${dir > 0 ? "▲" : "▼"}</span>`);
+  });
+  const producers = shard.rows.filter(r => r.producer).length;
+  document.getElementById("shardCount").textContent =
+    `${shard.rows.length} validators · ${producers} chunk producers · epoch ${shard.epoch_height}`;
+  document.querySelector("#shardTable tbody").innerHTML = rows.map(r => {
+    const role = r.producer ? "Chunk producer" : "Endorser";
+    const tags = (r.you ? `<span class="tag">you</span>` : "") + (r.slashed ? `<span class="tag">slashed</span>` : "");
+    const ping = r.peer
+      ? `${fmtMs(r.peer.ping_avg)}<br><span class="muted">${isNum(r.peer.loss_pct) ? fmtPct(r.peer.loss_pct, 0) + " loss" : "not pinged yet"}</span>`
+      : `<span class="muted">not a peer</span>`;
+    return `<tr${r.you ? ` style="background:var(--wash)"` : ""}>
+      <td class="num">${esc(r.shard)}</td>
+      <td>${r.you ? `<b>${esc(r.account_id)}</b>` : esc(r.account_id)}${tags}</td>
+      <td>${role}</td>
+      <td class="num">${fmtNear(r.stake)}<br><span class="muted">rank #${esc(r.rank)}</span></td>
+      ${pctCell(r.blocks)}${pctCell(r.chunks)}${pctCell(r.endorsements)}
+      <td class="num">${ping}</td>
+    </tr>`;
+  }).join("");
+}
+document.querySelector("#shardTable thead").addEventListener("click", e => {
+  const th = e.target.closest("th[data-sort]"); if (!th) return;
+  const key = th.dataset.sort;
+  shardSort = { key, dir: shardSort.key === key ? -shardSort.dir : (key === "account_id" || key === "shard" || key === "role" ? 1 : -1) };
+  try { localStorage.setItem("nvs-shard-sort", JSON.stringify(shardSort)); } catch {}
+  renderShard();
+});
+document.getElementById("shardEndorsers").addEventListener("change", e => {
+  try { localStorage.setItem("nvs-shard-endorsers", e.target.checked ? "1" : "0"); } catch {}
+  refresh();
+});
+
+// ---------------------------------------------------------------- data loop
+let range = 3600, timer = null;
+try { const r = localStorage.getItem("nvs-range"); if (r) range = r === "all" ? "all" : +r; } catch {}
+
+function rangeSeconds() { return range === "all" ? (config?.retention_hours || 24) * 3600 : range; }
+
+async function getJSON(url) {
+  const r = await fetch(url);
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || `${url} returned HTTP ${r.status}`);
+  return body;
+}
+let refreshing = false, refreshQueued = false;
+async function refresh() {
+  if (refreshing) { refreshQueued = true; return; }
+  refreshing = true;
+  try {
+    const endorsers = document.getElementById("shardEndorsers").checked ? 1 : 0;
+    const [m, l, p, s] = await Promise.all([
+      getJSON(`/api/metrics?range=${rangeSeconds()}&points=600`),
+      getJSON("/api/latest"),
+      getJSON(`/api/peers?range=${rangeSeconds()}`),
+      getJSON(`/api/shard?range=${rangeSeconds()}&endorsers=${endorsers}`),
+    ]);
+    lastData = m; latest = l; peers = p; shard = s;
+    // Don't re-render the log table while someone is reading an expanded message.
+    if (!document.querySelector("#logTable .msg.open")) await loadLogs().catch(() => {});
+    renderCharts(m);
+    renderHeader();
+    renderPeers();
+    renderShard();
+    renderChecks(l.host_checks);
+    if (!document.querySelector("#logTable .msg.open")) renderLogs();
+  } catch (e) {
+    const b = document.getElementById("banner");
+    b.textContent = "Cannot reach the stats server: " + e.message; b.classList.add("show");
+  } finally {
+    refreshing = false;
+    if (refreshQueued) { refreshQueued = false; refresh(); }
+  }
+}
+
+function schedule() {
+  clearInterval(timer);
+  const iv = config?.fast_mode ? 1 : Math.min(config?.interval_seconds || 60, 15);
+  timer = setInterval(refresh, Math.max(1, iv) * 1000);
+}
+
+async function loadConfig() {
+  config = await getJSON("/api/config");
+  document.getElementById("fast").checked = !!config.fast_mode;
+  applySections();
+}
+
+async function saveConfig(patch) {
+  const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+  const body = await r.json();
+  if (!r.ok) throw new Error(body.error || "Save failed");
+  config = body;
+  document.getElementById("fast").checked = !!config.fast_mode;
+  applySections();
+  schedule();
+  setTimeout(refresh, 1500);
+}
+
+// ---------------------------------------------------------------- UI wiring
+function markRange() {
+  document.querySelectorAll("#ranges button").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.r === String(range))));
+}
+document.getElementById("ranges").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  range = b.dataset.r === "all" ? "all" : +b.dataset.r;
+  try { localStorage.setItem("nvs-range", String(range)); } catch {}
+  markRange(); refresh();
+});
+document.getElementById("fast").addEventListener("change", async e => {
+  try { await saveConfig({ fast_mode: e.target.checked }); }
+  catch (err) { alert(err.message); e.target.checked = !e.target.checked; }
+});
+
+const dlg = document.getElementById("settings"), form = document.getElementById("settingsForm");
+document.getElementById("openSettings").addEventListener("click", async () => {
+  if (!config) {
+    try { await loadConfig(); }
+    catch (e) { alert("Can't load settings from the server: " + e.message); return; }
+  }
+  for (const el of form.elements) {
+    if (!el.name || !(el.name in config)) continue;
+    if (el.type === "checkbox") el.checked = !!config[el.name]; else el.value = config[el.name];
+  }
+  document.getElementById("settingsErr").textContent = "";
+  dlg.showModal();
+});
+document.getElementById("saveSettings").addEventListener("click", async e => {
+  e.preventDefault();
+  if (!form.reportValidity()) return;
+  const patch = {};
+  for (const el of form.elements) {
+    if (!el.name) continue;
+    patch[el.name] = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value;
+  }
+  try { await saveConfig(patch); dlg.close(); }
+  catch (err) { document.getElementById("settingsErr").textContent = err.message; }
+});
+
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", themeCharts);
+
+// ---------------------------------------------------------------- collapsible sections
+const SECTION_FLAG = { system: "collect_system", node: "collect_node", validator: "collect_validator",
+                       shard: "collect_validator", peers: "collect_peers" };
+let collapsed = [];
+try { collapsed = JSON.parse(localStorage.getItem("nvs-collapsed")) || []; } catch {}
+function applySections() {
+  document.querySelectorAll(".sec").forEach(sec => {
+    const key = sec.dataset.sec, isCollapsed = collapsed.includes(key);
+    sec.classList.toggle("collapsed", isCollapsed);
+    sec.querySelector(".sec-head").setAttribute("aria-expanded", String(!isCollapsed));
+    const off = sec.querySelector(".sec-off");
+    const enabled = !config || config[SECTION_FLAG[key]] !== false;
+    off.hidden = enabled;
+    off.title = enabled ? "" : "Not collecting new data. Turn it on in Settings → Data collection. Existing data is still shown.";
+  });
+}
+document.querySelectorAll(".sec-head").forEach(btn => btn.addEventListener("click", () => {
+  const key = btn.closest(".sec").dataset.sec;
+  collapsed = collapsed.includes(key) ? collapsed.filter(k => k !== key) : [...collapsed, key];
+  try { localStorage.setItem("nvs-collapsed", JSON.stringify(collapsed)); } catch {}
+  applySections();
+}));
+applySections();
+
+function currentTheme() { return document.documentElement.dataset.theme || "system"; }
+function markTheme() {
+  document.querySelectorAll("#theme button").forEach(b =>
+    b.setAttribute("aria-pressed", String(b.dataset.theme === currentTheme())));
+}
+document.getElementById("theme").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  const t = b.dataset.theme;
+  if (t === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = t;
+  try { t === "system" ? localStorage.removeItem("nvs-theme") : localStorage.setItem("nvs-theme", t); } catch {}
+  markTheme();
+  themeCharts();      // chart colours are read from CSS variables, so re-apply them
+  renderPeers(); renderShard();
+});
+markTheme();
+
+(async () => {
+  markRange();
+  themeCharts();
+  try { await loadConfig(); } catch {}
+  await refresh();
+  schedule();
+})();
+</script>
+</body>
+</html>

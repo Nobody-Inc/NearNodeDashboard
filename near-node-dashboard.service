@@ -1,0 +1,18 @@
+# Example systemd unit. Copy to /etc/systemd/system/, adjust User and paths, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now near-node-dashboard
+[Unit]
+Description=Near Node Dashboard
+# Start after neard so the startup host checks see it running (they also wait up to 2 minutes).
+# Change neard.service to your neard unit's name.
+After=network-online.target neard.service
+
+[Service]
+# Change to the account that runs the dashboard.
+User=nearnode
+WorkingDirectory=/opt/NearNodeDashboard
+ExecStart=/opt/NearNodeDashboard/.venv/bin/python server.py --host 0.0.0.0 --port 8787
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
