@@ -276,14 +276,15 @@ function statusPill(color, label) {
   return `<span class="dot" style="background:var(${color})"></span>${esc(label)}`;
 }
 
-// Node name: the validator account if there is one (configured or reported by the node),
-// otherwise the server's hostname. Shown in the heading and first in the browser tab title.
+// Node name: the server's hostname (the validator account if the hostname isn't known). Shown in
+// the heading and first in the browser tab title; the pool name is in the hover text and the
+// Validator tile.
 function renderNodeName(L) {
-  const name = L.validator_account_id || L.server_hostname || "";
+  const name = L.server_hostname || L.validator_account_id || "";
   const el = document.getElementById("nodeName");
   el.textContent = name;
   el.hidden = !name;
-  el.title = L.validator_account_id && L.server_hostname ? `server: ${L.server_hostname}` : "";
+  el.title = L.validator_account_id && L.server_hostname ? `validator: ${L.validator_account_id}` : "";
   const title = name ? `${name} · Near Node Dashboard` : "Near Node Dashboard";
   if (document.title !== title) document.title = title;
 }
