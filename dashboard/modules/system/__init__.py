@@ -8,10 +8,10 @@ import psutil
 
 from dashboard.core.alerts import alert
 from dashboard.core.collect import run_loop
-from dashboard.core.config import Setting, boolean, existing_path, host_list, hostname, text
+from dashboard.core.config import Setting, boolean, existing_path, hostname, text
 from dashboard.core.module import Module
 from dashboard.core.storage import db_query
-from dashboard.modules.system.checks import HealthMonitor
+from dashboard.modules.system.checks import HealthMonitor, detect_virtualization
 from dashboard.modules.system.stats import SystemCollector
 
 SYSTEM_COLS = [
@@ -40,12 +40,10 @@ class SystemModule(Module):
         # Process whose CPU and memory are tracked separately (e.g. the NEAR client).
         "process_name": Setting("neard", text),
         "collect_system": Setting(True, boolean),
-        # Slower health/security checks: DNS, clock, logins, log rates, SMART, patches, TLS, IPMI.
+        # Slower health/security checks: DNS, clock, logins, log rates, SMART, patches, IPMI.
         "collect_health": Setting(True, boolean),
         # Hostname whose DNS resolution time is measured (every minute).
         "dns_check_host": Setting("near.org", hostname),
-        # Extra HTTPS endpoints whose certificate expiry is checked, comma-separated host[:port].
-        "tls_check_hosts": Setting("", host_list),
         # Use `sudo -n` for SMART (smartctl) and IPMI (ipmitool). Only with passwordless sudo for
         # those commands; otherwise every attempt is logged as a failed sudo login.
         "health_checks_sudo": Setting(False, boolean),
@@ -61,7 +59,13 @@ class SystemModule(Module):
     def __init__(self, app):
         super().__init__(app)
         self.collector = SystemCollector(self.config)
-        self.monitor = HealthMonitor(self.config)
+        try:
+            self.virtualization = detect_virtualization()
+        except Exception as e:   # never block startup on detection
+            self.virtualization = {"virtual": None, "kind": None, "type": "unknown", "detail": f"detection failed: {e}"}
+        self.monitor = HealthMonitor(self.config, virtualization=self.virtualization)
+        # A VM or container can't see the host's sensors: skip temperatures and fans.
+        self.collector.ext.hardware_sensors = not self.virtualization.get("virtual")
         self.collector.monitor = self.monitor
 
     def start(self, stop):
@@ -84,7 +88,7 @@ class SystemModule(Module):
             "filesystems": det.get("filesystems", []), "disks": det.get("disks", []),
             "nics": det.get("nics", []), "tcp_states": det.get("tcp_states", {}),
             "temperatures": det.get("temperatures", []), "fans": det.get("fans", []),
-            "cores": psutil.cpu_count(), "platform": sys.platform,
+            "cores": psutil.cpu_count(), "platform": sys.platform, "virtualization": self.virtualization,
         }
 
     def alerts(self, ctx):
@@ -152,10 +156,6 @@ class SystemModule(Module):
                 add("smart", "critical", "A drive is failing (SMART)", r["smart"].get("detail", ""))
             if (r.get("ipmi") or {}).get("status") == "fail":
                 add("ipmi", "critical", "Power supply or fan failure", r["ipmi"].get("detail", ""))
-            for cert in (r.get("tls") or {}).get("certs", []):
-                if cert.get("status") in ("fail", "warn") and cert.get("days_left", 0) is not None:
-                    add(f"tls_{cert['host']}", "critical" if cert["status"] == "fail" else "warning",
-                        f"TLS certificate: {cert['host']}", cert.get("detail", ""))
             pt = r.get("patches") or {}
             if pt.get("security"):
                 add("patches", "info", "Security updates pending", pt.get("detail", ""))

@@ -128,6 +128,10 @@ function useLine(id, u, sat, err) {
 function renderHealth() {
   const s = lastData?.system || {}, h = healthData || {}, ck = h.checks || {};
   const L = k => lastOf(s[k]);
+  // On a VM or container the hardware checks (SMART, temperatures, fans, IPMI) are skipped.
+  const virt = h.virtualization || {}, isVirtual = virt.virtual === true;
+  const tempCard = CHARTS.find(d => d.id === "temp");
+  if (tempCard) tempCard.el.hidden = isVirtual;
   // USE summaries per resource
   useLine("use-cpu", `${fmtPct(L("cpu_pct"))} busy` + (isNum(L("cpu_steal")) ? `, steal ${fmtPct(L("cpu_steal"))}` : ""),
     `load ${isNum(L("load_per_core")) ? L("load_per_core").toFixed(2) : "—"}/core` + (isNum(L("procs_running")) ? `, run queue ${L("procs_running")}` : ""),
@@ -138,7 +142,8 @@ function renderHealth() {
   const smart = ck.smart;
   useLine("use-disk", `fullest fs ${fmtPct(L("fs_max_pct"), 0)}` + (isNum(L("disk_util_pct")) ? `, busiest disk ${fmtPct(L("disk_util_pct"), 0)}` : ""),
     `await ${fmtMs1(L("disk_await_ms"))}` + (isNum(L("disk_queue")) ? `, queue ${L("disk_queue").toFixed(2)}` : ""),
-    smart ? `SMART ${STATUS[smart.status]?.[2] || "N/A"}` : "SMART —");
+    isVirtual ? `SMART n/a (${virt.kind === "container" ? "container" : "VM"})`
+      : smart ? `SMART ${STATUS[smart.status]?.[2] || "N/A"}` : "SMART —");
   useLine("use-net", isNum(L("net_util_pct")) ? `${fmtPct(L("net_util_pct"))} of link` : `${fmtRate((L("net_recv_bps") || 0) + (L("net_sent_bps") || 0))}`,
     isNum(L("tcp_retrans_pct")) ? `retransmits ${fmtPct(L("tcp_retrans_pct"), 2)}` : "retransmits —",
     `${isNum(L("net_errors_ps")) ? ((L("net_errors_ps") || 0) + (L("net_drops_ps") || 0)).toFixed(1) : "—"} errors+drops/s`);
@@ -151,25 +156,28 @@ function renderHealth() {
     : `<tr><td colspan="6" class="muted">No filesystem data yet.</td></tr>`;
   // health checks table
   const rows = [], row = (name, st, value, detail) => rows.push(`<tr><td>${esc(name)}</td><td>${badge(st)}</td><td>${value}</td><td class="detail">${esc(detail || "")}</td></tr>`);
+  if (ck.virtualization) row("Virtualization", ck.virtualization.status,
+    isVirtual ? `${virt.kind === "container" ? "Container" : "Virtual machine"} (${esc(virt.type || "?")})`
+      : virt.virtual === false ? "Physical" : "Unknown", ck.virtualization.detail);
   if (ck.last_boot) row("Last reboot", ck.last_boot.status, isNum(L("uptime_sec")) ? `up ${fmtUptime(L("uptime_sec"))}` : "—", ck.last_boot.detail);
   if (ck.clock) row("Clock (NTP)", ck.clock.status, isNum(ck.clock.offset_ms) ? `${ck.clock.offset_ms >= 0 ? "+" : ""}${fmtMs1(ck.clock.offset_ms)}` : "—", ck.clock.detail);
   if (ck.dns) row("DNS", ck.dns.status, fmtMs1(ck.dns.ms), ck.dns.detail);
-  if (ck.smart) {
+  if (ck.smart && !isVirtual) {
     if ((ck.smart.drives || []).length) for (const d of ck.smart.drives)
       row(`SMART ${d.device}`, d.passed === true ? "pass" : d.passed === false ? "fail" : "na",
           (isNum(d.temperature) ? `${d.temperature} °C` : "") + (isNum(d.percentage_used) ? ` · ${d.percentage_used}% worn` : "") || "—",
           `${d.model || ""} ${d.detail || ""}`);
     else row("SMART", ck.smart.status, "—", ck.smart.detail);
   }
-  const temps = [...(h.temperatures || [])].sort((a, b) => b.current - a.current).slice(0, 4);
+  const temps = isVirtual ? [] : [...(h.temperatures || [])].sort((a, b) => b.current - a.current).slice(0, 4);
   for (const t of temps) row(`Temperature: ${t.label}`, isNum(t.critical) && t.current >= t.critical ? "fail" : (isNum(t.high) && t.current >= t.high) || t.current > 85 ? "warn" : "pass",
     `${t.current.toFixed(0)} °C`, `${t.chip}` + (isNum(t.high) ? ` · high ${t.high} °C` : "") + (isNum(t.critical) ? ` · critical ${t.critical} °C` : ""));
-  if (!temps.length) row("Temperatures", "na", "—", "No temperature sensors readable (Linux hwmon).");
-  for (const f of (h.fans || []).slice(0, 4)) row(`Fan: ${f.label}`, f.rpm > 0 ? "pass" : "warn", `${fmtNum(f.rpm)} RPM`, f.chip);
-  if (ck.ipmi) row("Power supplies & fans (IPMI)", ck.ipmi.status, "—", ck.ipmi.detail);
+  if (!temps.length && !isVirtual) row("Temperatures", "na", "—", "No temperature sensors readable (Linux hwmon).");
+  if (!isVirtual) {
+    for (const f of (h.fans || []).slice(0, 4)) row(`Fan: ${f.label}`, f.rpm > 0 ? "pass" : "warn", `${fmtNum(f.rpm)} RPM`, f.chip);
+    if (ck.ipmi) row("Power supplies & fans (IPMI)", ck.ipmi.status, "—", ck.ipmi.detail);
+  }
   if (ck.patches) row("Security updates", ck.patches.status, isNum(ck.patches.security) ? String(ck.patches.security) : "—", ck.patches.detail);
-  for (const c of (ck.tls?.certs || [])) row(`TLS ${c.host}`, c.status, isNum(c.days_left) ? `${c.days_left.toFixed(0)} days` : "—", c.detail);
-  if (ck.tls && !(ck.tls.certs || []).length) row("TLS certificates", "na", "—", ck.tls.detail);
   if (ck.logs) row("Journal (logins, log rates)", ck.logs.status, "—", ck.logs.detail);
   document.querySelector("#healthTable tbody").innerHTML = rows.join("") || `<tr><td colspan="4" class="muted">${config?.collect_health === false ? "Health checks are turned off (Settings → Data collection)." : "Running checks…"}</td></tr>`;
 }

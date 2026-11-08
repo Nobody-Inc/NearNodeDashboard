@@ -394,7 +394,7 @@ tr.gone:hover td { opacity: 0.85; }
       <label data-module="near"><input type="checkbox" name="collect_validator"><span>Validator<small>validators RPC; also feeds the shard table</small></span></label>
       <label data-module="near"><input type="checkbox" name="collect_peers"><span>Peers<small>peer tracking, churn and pings</small></span></label>
       <label data-module="near"><input type="checkbox" name="collect_logs"><span>Service log<small>WARN / ERROR lines from neard</small></span></label>
-      <label data-module="system"><input type="checkbox" name="collect_health"><span>Health &amp; security<small>DNS, clock, logins, log rates, SMART, patches, TLS</small></span></label>
+      <label data-module="system"><input type="checkbox" name="collect_health"><span>Health &amp; security<small>DNS, clock, logins, log rates, SMART, patches</small></span></label>
     </fieldset>
     <div class="row2" data-module="near">
       <div class="field" data-module="near">
@@ -470,17 +470,10 @@ tr.gone:hover td { opacity: 0.85; }
         <input type="text" id="c-proc" name="process_name" placeholder="neard">
       </div>
     </div>
-    <div class="row2" data-module="system">
-      <div class="field" data-module="system">
-        <label for="c-dns">DNS check host</label>
-        <input type="text" id="c-dns" name="dns_check_host" placeholder="near.org">
-        <small>Resolved every minute to measure DNS time.</small>
-      </div>
-      <div class="field" data-module="system">
-        <label for="c-tls">Extra TLS hosts</label>
-        <input type="text" id="c-tls" name="tls_check_hosts" placeholder="example.com, api.example.com:8443">
-        <small>Certificate expiry is checked every 6 h (HTTPS RPC URLs always).</small>
-      </div>
+    <div class="field" data-module="system">
+      <label for="c-dns">DNS check host</label>
+      <input type="text" id="c-dns" name="dns_check_host" placeholder="near.org">
+      <small>Resolved every minute to measure DNS time.</small>
     </div>
     <div class="field" data-module="system">
       <label><input type="checkbox" name="health_checks_sudo"> Use passwordless sudo for SMART and IPMI checks</label>

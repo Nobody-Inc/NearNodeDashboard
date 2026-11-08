@@ -117,6 +117,7 @@ class ExtendedStats:
         self.prev = None          # (time, counters)
         self.proc_cache = (0.0, None, None)
         self._slow = {}           # name -> (time, value), see _every()
+        self.hardware_sensors = True   # False on a VM/container: temperatures and fans aren't read
         self.details = {}
         psutil.cpu_times_percent(interval=None)  # prime: next call measures since now
 
@@ -245,7 +246,7 @@ class ExtendedStats:
                     zombies += 1
             self.proc_cache = (now, count, zombies)
         row["proc_count"], row["proc_zombies"] = self.proc_cache[1], self.proc_cache[2]
-        temps, fans = self._every("sensors", now, self._sensors)
+        temps, fans = self._every("sensors", now, self._sensors) if self.hardware_sensors else ([], [])
         det["temperatures"], det["fans"] = temps, fans
         row["temp_max_c"] = max((x["current"] for x in temps), default=None)
 

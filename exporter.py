@@ -121,7 +121,8 @@ def build_snapshot(base):
                          "inode_ratio": pct(f.get("inode_pct"))} for f in health.get("filesystems", [])],
         "alerts": [{k: a.get(k) for k in ("id", "severity", "title", "detail", "since")} for a in latest.get("alerts") or []],
         "checks": {k: {kk: vv for kk, vv in v.items() if kk in ("status", "detail", "offset_ms", "synced", "ms", "security",
-                                                                 "total", "reboot_required", "unexpected", "certs", "drives")}
+                                                                 "total", "reboot_required", "unexpected", "drives",
+                                                                 "virtual", "kind", "type")}
                    for k, v in (health.get("checks") or {}).items()},
         "node_status": {
             "rpc_up": None if not has_near else 0 if latest.get("error") else 1, "rpc_error": latest.get("error"),
@@ -277,8 +278,6 @@ def prometheus(snap, meta, per_peer=False):
         g("filesystem_used_ratio", f.get("used_ratio"), "Space use per filesystem (0-1)", lab)
         g("filesystem_inode_ratio", f.get("inode_ratio"), "Inode use per filesystem (0-1)", lab)
     ck = snap.get("checks", {})
-    for cert in (ck.get("tls") or {}).get("certs") or []:
-        g("tls_cert_days_left", cert.get("days_left"), "Days until a TLS certificate expires", {"host": cert.get("host") or ""})
     pt = ck.get("patches") or {}
     g("security_updates_pending", pt.get("security"), "Security updates waiting to be installed")
     g("updates_pending", pt.get("total"), "Package updates waiting to be installed")
@@ -288,6 +287,10 @@ def prometheus(snap, meta, per_peer=False):
     for d in drives:
         if d.get("passed") is not None:
             g("smart_healthy", int(bool(d["passed"])), "1 if a drive's SMART self-assessment passed", {"device": d.get("device") or ""})
+    virt = ck.get("virtualization") or {}
+    if virt.get("virtual") is not None:
+        g("system_virtualized", int(bool(virt["virtual"])), "1 if the server is a virtual machine or container "
+          "(hardware checks are then skipped)", {"kind": virt.get("kind") or "", "type": virt.get("type") or ""})
     if (ck.get("last_boot") or {}).get("unexpected") is not None:
         g("last_reboot_unexpected", int(bool(ck["last_boot"]["unexpected"])), "1 if the previous boot had no clean shutdown")
     # alerts (symptom-based, evaluated by the dashboard)

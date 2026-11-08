@@ -1,5 +1,5 @@
 """Slower host health and security checks, each on its own schedule: DNS, clock/NTP, failed
-logins and system log rates (journal), SMART, pending security updates, TLS expiry, IPMI power
+logins and system log rates (journal), SMART, pending security updates, IPMI power
 supplies and fans, and whether the last reboot was clean."""
 
 import json
@@ -7,8 +7,8 @@ import os
 import re
 import shutil
 import socket
-import ssl
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -164,22 +164,6 @@ def patch_status():
     return {"status": status, "security": security, "total": total, "reboot_required": reboot, "tool": tool,
             "detail": detail + " (as of the last package list refresh)"}
 
-def tls_expiry(host, port=443, timeout=10):
-    try:
-        ctx = ssl.create_default_context()
-        with socket.create_connection((host, port), timeout=timeout) as s:
-            with ctx.wrap_socket(s, server_hostname=host) as t:
-                cert = t.getpeercert()
-        expires = ssl.cert_time_to_seconds(cert["notAfter"])
-        days = (expires - time.time()) / 86400
-        status = "fail" if days < 3 else "warn" if days < 14 else "pass"
-        return {"host": f"{host}:{port}", "status": status, "expires": expires, "days_left": days,
-                "detail": f"expires in {days:.0f} days"}
-    except ssl.SSLCertVerificationError as e:
-        return {"host": f"{host}:{port}", "status": "fail", "detail": f"certificate invalid: {e.verify_message}"}
-    except Exception as e:
-        return {"host": f"{host}:{port}", "status": "warn", "detail": f"couldn't check: {e}"}
-
 def ipmi_status(use_sudo=False):
     """Power supply and fan status via ipmitool (servers with a BMC; usually needs root)."""
     if not shutil.which("ipmitool"):
@@ -217,17 +201,78 @@ def last_boot_status():
             "detail": "The previous boot has no clean-shutdown record: the last reboot looks unexpected "
                       "(crash, power loss or hard reset)."}
 
+# DMI vendor/product strings of common hypervisors and cloud VMs (lowercase substrings).
+VM_DMI_MARKERS = ("kvm", "qemu", "vmware", "virtualbox", "xen", "bochs", "bhyve", "parallels",
+                  "virtual machine", "google compute engine", "droplet", "openstack", "hvm domu")
+
+
+def _read_text(path):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def detect_virtualization(root="/"):
+    """Whether this machine is a virtual machine (or container). Returns
+    {"virtual": bool or None, "kind": "vm" | "container" | None, "type": str, "detail": str};
+    "virtual" is None when it couldn't be determined (hardware checks then still run)."""
+    def result(virtual, kind, type_, how):
+        if virtual:
+            detail = f"{'Container' if kind == 'container' else 'Virtual machine'} ({type_}), detected via {how}"
+        elif virtual is False:
+            detail = f"Physical server (detected via {how})"
+        else:
+            detail = "Couldn't tell whether this is a virtual machine"
+        return {"virtual": virtual, "kind": kind, "type": type_, "detail": detail}
+
+    if sys.platform == "darwin":
+        r = run_cmd(["sysctl", "-n", "kern.hv_vmm_present"], timeout=5)
+        if r and r[0] == 0 and r[1].strip() in ("0", "1"):
+            vm = r[1].strip() == "1"
+            return result(vm, "vm" if vm else None, "macOS VM" if vm else "none", "kern.hv_vmm_present")
+        return result(None, None, "unknown", "")
+    # systemd-detect-virt knows every common hypervisor and container runtime.
+    if shutil.which("systemd-detect-virt"):
+        r = run_cmd(["systemd-detect-virt"], timeout=5)
+        what = r[1].strip() if r else ""
+        if r and r[0] == 0 and what and what != "none":
+            ct = run_cmd(["systemd-detect-virt", "--container", "--quiet"], timeout=5)
+            return result(True, "container" if ct and ct[0] == 0 else "vm", what, "systemd-detect-virt")
+        if what == "none":
+            return result(False, None, "none", "systemd-detect-virt")
+    # Fallbacks: the CPU's hypervisor flag (x86), then the DMI vendor/product names.
+    for line in _read_text(os.path.join(root, "proc/cpuinfo")).splitlines():
+        if line.startswith("flags") and " hypervisor" in f" {line.split(':', 1)[-1]} ":
+            return result(True, "vm", "hypervisor", "the CPU hypervisor flag")
+    dmi = " ".join(_read_text(os.path.join(root, "sys/class/dmi/id", f)) for f in ("sys_vendor", "product_name")).lower()
+    hit = next((m for m in VM_DMI_MARKERS if m in dmi), None)
+    if hit:
+        return result(True, "vm", hit, "DMI product information")
+    if dmi.strip():
+        return result(False, None, "none", "DMI product information")
+    return result(None, None, "unknown", "")
+
+
+# Checks that read physical hardware; meaningless (or always failing) inside a VM or container.
+HARDWARE_CHECKS = ("smart", "ipmi")
+
+
 class HealthMonitor:
     """Runs the slow checks on their own schedules and keeps the latest results.
     Gauges (DNS, clock) are carried into every system sample; counts (failed logins, system log
     errors/warnings) are handed to the next sample once, so bucket sums are correct."""
 
-    SCHEDULE = {"dns": 60, "clock": 300, "logs": 300, "ipmi": 300, "smart": 21600, "patches": 21600, "tls": 21600}
+    SCHEDULE = {"dns": 60, "clock": 300, "logs": 300, "ipmi": 300, "smart": 21600, "patches": 21600}
 
-    def __init__(self, config, on_change=None):
+    def __init__(self, config, on_change=None, virtualization=None):
         self.config = config
         self.on_change = on_change or (lambda: None)
         self.results = {}
+        # On a VM or container the hardware checks (SMART, IPMI) are skipped.
+        self.virtualization = virtualization or {"virtual": None, "kind": None, "type": "unknown", "detail": ""}
+        self.virtual = bool(self.virtualization.get("virtual"))
         self.lock = threading.Lock()
         self.last_run = {}
         self.pending = {}
@@ -248,20 +293,6 @@ class HealthMonitor:
     def snapshot(self):
         with self.lock:
             return {k: dict(v) for k, v in self.results.items()}
-
-    def tls_hosts(self):
-        from urllib.parse import urlparse
-        hosts = []
-        for key in ("rpc_url", "validators_rpc_url"):
-            u = urlparse(self.config.get(key) or "")
-            if u.scheme == "https" and u.hostname:
-                hosts.append((u.hostname, u.port or 443))
-        for item in (self.config.get("tls_check_hosts") or "").split(","):
-            item = item.strip()
-            if item:
-                host, _, port = item.rpartition(":") if re.search(r":\d+$", item) else (item, "", "443")
-                hosts.append((host, int(port)))
-        return list(dict.fromkeys(hosts))
 
     def run_check(self, name):
         sudo = bool(self.config.get("health_checks_sudo"))
@@ -296,17 +327,16 @@ class HealthMonitor:
             self._set("smart", smart_status(sudo))
         elif name == "patches":
             self._set("patches", patch_status())
-        elif name == "tls":
-            certs = [tls_expiry(h, p) for h, p in self.tls_hosts()]
-            worst = "fail" if any(c["status"] == "fail" for c in certs) else \
-                "warn" if any(c["status"] == "warn" for c in certs) else "pass" if certs else "na"
-            self._set("tls", {"status": worst, "certs": certs,
-                              "detail": f"{len(certs)} certificate(s) checked" if certs else
-                              "No HTTPS endpoints to check (add some in Settings → TLS hosts)."})
         elif name == "ipmi":
             self._set("ipmi", ipmi_status(sudo))
 
     def run(self, stop):
+        v = self.virtualization
+        self._set("virtualization", {
+            "status": "pass" if v.get("virtual") is False else "na",   # informational: VM, container or unknown
+            "virtual": v.get("virtual"), "kind": v.get("kind"), "type": v.get("type"),
+            "detail": v.get("detail", "") + (". Hardware checks (SMART, temperatures, fans, IPMI) are skipped: "
+                                               "the host's hardware isn't visible from here." if v.get("virtual") else "")})
         try:
             self._set("last_boot", last_boot_status())
         except Exception as e:
@@ -315,6 +345,8 @@ class HealthMonitor:
             if self.config.get("collect_health"):
                 now = time.time()
                 for name, every in self.SCHEDULE.items():
+                    if self.virtual and name in HARDWARE_CHECKS:
+                        continue
                     if now - self.last_run.get(name, 0) >= every:
                         self.last_run[name] = now
                         try:

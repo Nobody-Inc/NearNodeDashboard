@@ -88,16 +88,6 @@ def hostname(v):
     return v
 
 
-def host_list(v):
-    items = [i.strip().lower() for i in str(v).split(",") if i.strip()]
-    for i in items:
-        if not re.match(r"^[a-z0-9.-]+(:\d{1,5})?$", i):
-            raise ValueError(f"{i!r} isn't host or host:port")
-    if len(items) > 20:
-        raise ValueError("at most 20 hosts")
-    return ",".join(items)
-
-
 def existing_path(v):
     v = str(v).strip() or "/"
     if not os.path.exists(v):

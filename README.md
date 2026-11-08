@@ -168,7 +168,9 @@ The **System** section is organised by the USE method (Utilization, Saturation, 
 | Disk | space and inodes per filesystem, busy % | I/O latency (await), queue depth, IOPS | SMART health |
 | Network | bandwidth vs link speed | TCP retransmits, connection states (ESTABLISHED, TIME_WAIT…) | packet errors and drops |
 
-The **Health & security** section covers uptime and unexpected reboots, processes and zombies, open file handles, clock drift (NTP), temperatures, fans and power supplies, DNS resolution time, failed SSH logins, system log error/warning rates, TLS certificate expiry and pending security updates.
+The **Health & security** section covers uptime and unexpected reboots, processes and zombies, open file handles, clock drift (NTP), temperatures, fans and power supplies, DNS resolution time, failed SSH logins, system log error/warning rates and pending security updates.
+
+On a **virtual machine or container** (detected at startup with `systemd-detect-virt`, the CPU's hypervisor flag or the DMI product name), the hardware checks are skipped: SMART, temperatures, fans and power supplies (IPMI) aren't visible from inside a VM. The health table shows a *Virtualization* row saying which was detected, and the exporter publishes it as `near_node_system_virtualized`.
 
 The **NEAR node** section starts with RED tiles for neard: **Rate** (blocks/s), **Errors** (missed blocks/chunks/endorsements, RPC failures) and **Duration** (block lag, RPC latency).
 
@@ -183,12 +185,12 @@ The **NEAR node** section starts with RED tiles for neard: **Rate** (blocks/s), 
 - high CPU steal or iowait, or CPU saturated for 10 minutes;
 - file handles running out, hot hardware, a failing drive, PSU or fan;
 - the clock not NTP-synced or drifting;
-- DNS failing, TLS certificates expiring;
+- DNS failing;
 - an unexpected last reboot;
 - many failed logins;
 - pending security updates (info).
 
-Cheap metrics are sampled with every collection; slower checks run on their own schedule (DNS every minute; clock, logins, log rates and IPMI every 5 minutes; SMART, updates and TLS every 6 hours), so 1s mode doesn't hammer them. Most of these are Linux-only and show "—" elsewhere. Optional extras:
+Cheap metrics are sampled with every collection; slower checks run on their own schedule (DNS every minute; clock, logins, log rates and IPMI every 5 minutes; SMART and updates every 6 hours), so 1s mode doesn't hammer them. Most of these are Linux-only and show "—" elsewhere. Optional extras (physical servers only):
 - **SMART:** `sudo apt install smartmontools`. Reading drives needs root, so either run as root or give the service user passwordless sudo for `smartctl` and turn on `health_checks_sudo`.
 - **Power supplies and fans:** `ipmitool` on servers with a BMC (same root/sudo note).
 - **Unexpected-reboot detection:** a persistent journal (`sudo mkdir -p /var/log/journal`).
@@ -215,9 +217,8 @@ Cheap metrics are sampled with every collection; slower checks run on their own 
 | `p2p_port` | `24567` | neard's P2P port (`network.addr` in `~/.near/config.json`), checked for inbound access at startup |
 | `firewall_check_sudo` | `false` | Read firewall rules with `sudo -n` when not root. Only enable it if the service user has passwordless sudo for `ufw`/`iptables`/`nft`/`firewall-cmd`; otherwise each attempt is logged as a failed sudo authentication |
 | `read_only` | `true` | Lock the settings: when `true` (the default), nothing can be changed from the web page (the Settings dialog becomes view-only and 1s mode is locked), and the page shows a warning. It can only be set by editing `config.json` on the server, and takes effect when the dashboard restarts |
-| `collect_health` | `true` | Run the slower health and security checks (DNS, clock, failed logins, system log rates, SMART, updates, TLS, IPMI) |
+| `collect_health` | `true` | Run the slower health and security checks (DNS, clock, failed logins, system log rates, SMART, updates, IPMI) |
 | `dns_check_host` | `near.org` | Hostname resolved every minute to measure DNS time |
-| `tls_check_hosts` | *(blank)* | Extra HTTPS endpoints (`host[:port]`, comma-separated) whose certificate expiry is checked; HTTPS RPC URLs are always checked |
 | `health_checks_sudo` | `false` | Use `sudo -n` for SMART and IPMI checks. Only enable with passwordless sudo for `smartctl`/`ipmitool`; otherwise each attempt is logged as a failed sudo login |
 | `ping_enabled` | `true` | Ping every active peer once per round |
 | `ping_method` | `icmp` | `icmp` uses the system `ping` command. `tcp` times a TCP connection to the peer's NEAR port (24567), which works when a peer blocks ICMP |
