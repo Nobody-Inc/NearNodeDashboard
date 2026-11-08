@@ -6,6 +6,7 @@ Then open http://<this-machine's-ip>:8787 (or http://127.0.0.1:8787 locally)
 """
 
 import argparse
+import contextlib
 import ipaddress
 import json
 import math
@@ -24,6 +25,9 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import queue
+from collections import OrderedDict
+
 import psutil
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -41,8 +45,8 @@ DEFAULT_CONFIG = {
     "rpc_url": "http://127.0.0.1:3030",
     # Optional separate endpoint for the (large) `validators` JSON-RPC call. Blank = rpc_url.
     "validators_rpc_url": "",
-    # How often to call `validators` (it returns every validator, so keep it modest).
-    "validators_interval_seconds": 60,
+    # How often to call `validators` (~400 KB on mainnet: it returns every validator, so keep it modest).
+    "validators_interval_seconds": 120,
     # Validator pool to track. Blank = use validator_account_id reported by the node's /status.
     "validator_account_id": "",
     # Filesystem path whose disk usage is tracked (point it at your NEAR data dir's mount).
@@ -175,6 +179,7 @@ class Config:
                 raise PermissionError(READ_ONLY_MESSAGE)
             self.data.update(clean)
             self.save()
+        DATA_GEN.bump()
         self.changed.set()
         return self.snapshot()
 
@@ -277,11 +282,86 @@ def validate_config_patch(patch, from_file=False):
 
 # --------------------------------------------------------------------------- storage
 
-def db_connect(path):
-    conn = sqlite3.connect(path, timeout=10)
+def db_connect(path, shared=False):
+    # shared=True: a pooled connection used by one request thread at a time (see DBPool).
+    conn = sqlite3.connect(path, timeout=10, check_same_thread=not shared)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     return conn
+
+
+class DataGeneration:
+    """Counter bumped whenever stored data changes. Cached API responses are keyed on it, so a
+    response is reused only until new data arrives (see ResponseCache)."""
+
+    def __init__(self):
+        self._n = 0
+        self._lock = threading.Lock()
+
+    def bump(self):
+        with self._lock:
+            self._n += 1
+
+    @property
+    def value(self):
+        return self._n
+
+
+DATA_GEN = DataGeneration()
+
+
+class ResponseCache:
+    """Small LRU cache of computed API responses. An entry is reused while the data generation is
+    unchanged and it is younger than `max_age` (so time-based fields like "now" stay fresh)."""
+
+    def __init__(self, max_entries=48, max_age=30):
+        self._d = OrderedDict()
+        self._lock = threading.Lock()
+        self.max_entries, self.max_age = max_entries, max_age
+
+    def get_or_compute(self, key, compute):
+        gen, now = DATA_GEN.value, time.time()
+        with self._lock:
+            hit = self._d.get(key)
+            if hit and hit[0] == gen and now - hit[1] < self.max_age:
+                self._d.move_to_end(key)
+                return hit[2]
+        value = compute()  # outside the lock; concurrent misses may both compute, which is harmless
+        with self._lock:
+            self._d[key] = (gen, now, value)
+            self._d.move_to_end(key)
+            while len(self._d) > self.max_entries:
+                self._d.popitem(last=False)
+        return value
+
+
+CACHE = ResponseCache()
+
+
+class DBPool:
+    """Reuses SQLite connections across HTTP requests instead of opening (and re-running the
+    PRAGMAs on) a new one per request. Each connection is used by one request at a time."""
+
+    def __init__(self, path, size=8):
+        self.path, self.size = path, size
+        self._q = queue.LifoQueue()
+
+    @contextlib.contextmanager
+    def conn(self):
+        try:
+            c = self._q.get_nowait()
+        except queue.Empty:
+            c = db_connect(self.path, shared=True)
+        try:
+            yield c
+        except Exception:
+            c.close()
+            raise
+        else:
+            if self._q.qsize() < self.size:
+                self._q.put(c)
+            else:
+                c.close()
 
 
 def db_init(path):
@@ -323,6 +403,7 @@ def db_insert(conn, table, cols, ts, row):
         [ts] + [row.get(c) for c in cols],
     )
     conn.commit()
+    DATA_GEN.bump()
 
 
 def version_changes(conn, since):
@@ -434,6 +515,7 @@ class SystemCollector:
 
 
 MAX_RPC_RESPONSE_BYTES = 16 * 2**20
+NETWORK_INFO_MIN_SEC = 10   # /network_info is fetched at most this often (matters in 1s mode)
 
 
 def http_json(url, payload=None, timeout=10):
@@ -594,6 +676,7 @@ class LogCollector:
         self.offset = 0
         self.source_key = None      # resets position when source/unit/file changes
         self.coverage_start = None  # earliest time this run's reads cover (for zero-filling the chart)
+        self._follower = None       # long-running `journalctl -f` (see _start_follower)
         self.status = {"ok": None, "error": None, "warning": None, "last_read": None}
 
     def _since(self, conn):
@@ -601,8 +684,22 @@ class LogCollector:
         floor = time.time() - float(self.config.get("retention_hours")) * 3600
         return max(last or 0, floor)
 
-    def _read_journald(self, conn, unit):
-        cmd = ["journalctl", "-u", unit, "-o", "json", "--no-pager", "--output-fields=MESSAGE"]
+    JOURNAL_PERMISSION_WARNING = ("No permission to read the system journal. Add this user to the "
+                                  "'systemd-journal' group and restart the dashboard.")
+
+    def _stop_follower(self):
+        f, self._follower = self._follower, None
+        if f is not None:
+            try:
+                f["proc"].kill()
+                f["proc"].wait(timeout=5)
+            except Exception:
+                pass
+
+    def _start_follower(self, conn, unit):
+        """Start one long-running `journalctl -f` instead of a new journalctl every poll. Reader
+        threads move its stdout lines into a queue and keep its stderr for error messages."""
+        cmd = ["journalctl", "-u", unit, "-o", "json", "--no-pager", "--output-fields=MESSAGE", "-f"]
         if self.cursor:
             cmd += ["--after-cursor", self.cursor]
         else:
@@ -611,19 +708,33 @@ class LogCollector:
                 self.coverage_start = since
             cmd += ["--since", f"@{int(since)}"]
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                                 timeout=60)
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
+                                    text=True, encoding="utf-8", errors="replace", bufsize=1)
         except FileNotFoundError:
             raise RuntimeError("journalctl not found: this system has no systemd journal. "
                                "Use log source 'file' instead.")
-        if out.returncode != 0:
-            raise RuntimeError((out.stderr.strip() or "journalctl failed")[:300])
-        warning = None
-        if "not seeing messages from other users" in out.stderr or "No journal files" in out.stderr:
-            warning = ("No permission to read the system journal. Add this user to the "
-                       "'systemd-journal' (or 'adm') group and restart the stats server.")
-        lines = []
-        for raw in out.stdout.splitlines():
+        f = {"proc": proc, "lines": queue.Queue(), "stderr": []}
+
+        def pump(stream, sink):
+            for line in stream:
+                sink(line)
+
+        threading.Thread(target=pump, args=(proc.stdout, f["lines"].put), daemon=True).start()
+        threading.Thread(target=pump, args=(proc.stderr, lambda l: f["stderr"].append(l) if len(f["stderr"]) < 50 else None),
+                         daemon=True).start()
+        self._follower = f
+
+    def _read_journald(self, conn, unit):
+        if self._follower is None:
+            self._start_follower(conn, unit)
+        f = self._follower
+        lines, raw_lines = [], []
+        while True:
+            try:
+                raw_lines.append(f["lines"].get_nowait())
+            except queue.Empty:
+                break
+        for raw in raw_lines:
             try:
                 j = json.loads(raw)
             except ValueError:
@@ -635,6 +746,14 @@ class LogCollector:
             if msg:
                 ts = int(j.get("__REALTIME_TIMESTAMP", 0)) / 1e6 or time.time()
                 lines.append((msg, ts))
+        err = "".join(f["stderr"])
+        if f["proc"].poll() is not None and f["lines"].empty():
+            # journalctl exited: report why, and restart from the last cursor on the next poll.
+            self._follower = None
+            if f["proc"].returncode != 0:
+                raise RuntimeError((err.strip() or f"journalctl exited with code {f['proc'].returncode}")[:300])
+        warning = (self.JOURNAL_PERMISSION_WARNING
+                   if "not seeing messages from other users" in err or "No journal files" in err else None)
         return lines, warning
 
     def _read_file(self, path):
@@ -679,8 +798,11 @@ class LogCollector:
         cfg = self.config.snapshot()
         key = (cfg["log_source"], cfg["log_unit"], cfg["log_file"])
         if key != self.source_key:
+            self._stop_follower()
             self.source_key, self.cursor, self.file_id, self.offset = key, None, None, 0
             self.coverage_start = None
+        if cfg["log_source"] != "journald":
+            self._stop_follower()
         if cfg["log_source"] == "journald":
             lines, warning = self._read_journald(conn, cfg["log_unit"] or "neard")
         else:
@@ -697,6 +819,8 @@ class LogCollector:
         conn.executemany("INSERT OR IGNORE INTO node_logs (ts, level, target, message, sig) VALUES (?,?,?,?,?)",
                          [(r["ts"], r["level"], r["target"], r["message"], r["sig"]) for r in rows])
         conn.commit()
+        if rows:
+            DATA_GEN.bump()
         self.status = {"ok": True, "error": None, "warning": warning, "last_read": time.time(),
                        "lines_read": len(lines), "matched": len(rows)}
 
@@ -704,13 +828,16 @@ class LogCollector:
         conn = db_connect(db_path)
         last = 0.0
         while not stop.is_set():
-            if self.config.get("collect_logs") and time.time() - last >= int(self.config.get("log_poll_seconds")):
+            if not self.config.get("collect_logs"):
+                self._stop_follower()
+            elif time.time() - last >= int(self.config.get("log_poll_seconds")):
                 last = time.time()
                 try:
                     self.poll(conn)
                 except Exception as e:
                     self.status = {"ok": False, "error": str(e), "warning": None, "last_read": time.time()}
             stop.wait(1)
+        self._stop_follower()
         conn.close()
 
     def query(self, conn, rng, level="all", q="", limit=200):
@@ -1306,6 +1433,10 @@ class NearCollector:
         # Start in baseline mode: peers that changed while the server was down must not be
         # counted as churn at startup.
         self._peers_rebaseline = True
+        self._peer_state = None           # peer_id -> [connected, ip, port, account] (see _track_peers)
+        self._ni, self._ni_t, self._ni_url = None, 0.0, None   # last /network_info (see _sample)
+        self._last_seen_flush = 0.0
+        self._prev_peer_sample = None
         self.db_path = None  # set by main(); the collector thread opens its own connection
         self._conn = None
         self.epoch_length = None
@@ -1329,6 +1460,7 @@ class NearCollector:
             if gen == self._val_gen and self.config.get("collect_validator"):
                 self.validators, self.validators_error = result, None
                 self.validators_fetched_at = time.time()
+                DATA_GEN.bump()
         except Exception as e:
             if gen == self._val_gen:
                 self.validators_error = str(e)
@@ -1439,15 +1571,22 @@ class NearCollector:
                 print(f"[near] version tracking error: {e}", flush=True)
 
         if on_node or on_peers:
+            # /network_info is large (~50 KB with the producer list) and peer counts don't need
+            # second-by-second detail, so in 1s mode fetch it at most every NETWORK_INFO_MIN_SEC and
+            # reuse the last values in between (keeps the charts continuous).
+            fresh = now - self._ni_t >= NETWORK_INFO_MIN_SEC or self._ni is None or url != self._ni_url
             try:
-                ni = http_json(f"{url}/network_info")
+                if fresh:
+                    self._ni, self._ni_t, self._ni_url = http_json(f"{url}/network_info"), now, url
+                ni = self._ni
                 row.update(peers=ni.get("num_active_peers"), max_peers=ni.get("peer_max_count"),
                            near_sent_bps=ni.get("sent_bytes_per_sec"),
                            near_recv_bps=ni.get("received_bytes_per_sec"))
                 dicts = lambda xs: [x for x in xs if isinstance(x, dict)] if isinstance(xs, list) else []  # noqa: E731
-                self.known_producers = dicts(ni.get("known_producers"))
+                if fresh:
+                    self.known_producers = dicts(ni.get("known_producers"))
                 latest["known_producers"] = len(self.known_producers)
-                if on_peers:
+                if on_peers and fresh:
                     self.active_peers = dicts(ni.get("active_peers"))
                     self.peers_t = now
                     try:
@@ -1455,6 +1594,7 @@ class NearCollector:
                     except Exception as e:
                         print(f"[near] peer tracking error: {e}", flush=True)
             except Exception as e:
+                self._ni = None
                 latest["network_info_error"] = str(e)
 
         start = latest["epoch_start_height"]
@@ -1489,13 +1629,23 @@ class NearCollector:
             self._conn = db_connect(self.db_path)
         return self._conn
 
+    PEER_LAST_SEEN_FLUSH_SEC = 60
+
     def _track_peers(self, now):
-        """Diff the active peer list against peers_seen; record join/leave events. Returns (joins, leaves)."""
+        """Diff the active peer list against the known peers; record join/leave events.
+        Returns (joins, leaves).
+
+        The known set is kept in memory (loaded from peers_seen once), so a sample only writes the
+        peers that joined, left or changed address/account; last_seen for connected peers is
+        refreshed at most once a minute instead of 40-odd upserts on every sample."""
         conn = self._db()
+        if self._peer_state is None:
+            self._peer_state = {r[0]: [bool(r[1]), r[2], r[3], r[4]] for r in conn.execute(
+                "SELECT peer_id, connected, ip, port, account_id FROM peers_seen")}
+        known = self._peer_state
         by_peer_id = {k["peer_id"]: k.get("account_id") for k in self.known_producers if k.get("peer_id")}
-        known = {r[0]: r[1:] for r in conn.execute("SELECT peer_id, connected, ip, account_id FROM peers_seen")}
-        # First run ever, or resuming after peer collection was paused: record the current set
-        # without counting it as churn.
+        # First run ever, or resuming after peer collection was paused / a new RPC node: record the
+        # current set without counting it as churn.
         baseline = not known or self._peers_rebaseline
         self._peers_rebaseline = False
         current = {}
@@ -1504,31 +1654,57 @@ class NearCollector:
             if pid:
                 ip, port = split_addr(p.get("addr"))
                 current[pid] = (ip, port, p.get("account_id") or by_peer_id.get(pid))
-        joins = [pid for pid in current if known.get(pid, (0,))[0] != 1]
-        leaves = [pid for pid, k in known.items() if k[0] == 1 and pid not in current]
-        conn.executemany(
-            """INSERT INTO peers_seen (peer_id, ip, port, account_id, first_seen, last_seen, connected, connected_since)
-               VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-               ON CONFLICT(peer_id) DO UPDATE SET
-                 ip = excluded.ip, port = excluded.port,
-                 account_id = COALESCE(excluded.account_id, peers_seen.account_id),
-                 last_seen = excluded.last_seen,
-                 connected_since = CASE WHEN peers_seen.connected = 1 THEN peers_seen.connected_since
-                                        ELSE excluded.connected_since END,
-                 connected = 1""",
-            [(pid, ip, port, acct, now, now, now) for pid, (ip, port, acct) in current.items()])
-        conn.executemany("UPDATE peers_seen SET connected = 0 WHERE peer_id = ?", [(pid,) for pid in leaves])
+        joins = [pid for pid in current if not (pid in known and known[pid][0])]
+        leaves = [pid for pid, k in known.items() if k[0] and pid not in current]
+        # Peers whose row must be written: new/reconnected, or address/account changed.
+        dirty = [pid for pid in current if pid in joins or known[pid][1:3] != list(current[pid][:2])
+                 or (current[pid][2] and known[pid][3] != current[pid][2])]
+        flush_last_seen = baseline or now - self._last_seen_flush >= self.PEER_LAST_SEEN_FLUSH_SEC
+        writes = bool(dirty or leaves or flush_last_seen or baseline)
+
+        if dirty:
+            conn.executemany(
+                """INSERT INTO peers_seen (peer_id, ip, port, account_id, first_seen, last_seen, connected, connected_since)
+                   VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                   ON CONFLICT(peer_id) DO UPDATE SET
+                     ip = excluded.ip, port = excluded.port,
+                     account_id = COALESCE(excluded.account_id, peers_seen.account_id),
+                     last_seen = excluded.last_seen,
+                     connected_since = CASE WHEN peers_seen.connected = 1 THEN peers_seen.connected_since
+                                            ELSE excluded.connected_since END,
+                     connected = 1""",
+                [(pid, *current[pid], now, now, now) for pid in dirty])
+        if leaves:
+            # last seen = the previous sample, when the peer was still connected
+            left_at = self._prev_peer_sample or now
+            conn.executemany("UPDATE peers_seen SET connected = 0, last_seen = ? WHERE peer_id = ?",
+                             [(left_at, pid) for pid in leaves])
+        if flush_last_seen:
+            conn.executemany("UPDATE peers_seen SET last_seen = ? WHERE peer_id = ?",
+                             [(now, pid) for pid in current if pid not in dirty])
+            self._last_seen_flush = now
         if baseline:
             # We weren't watching before now (startup, paused collection, new RPC node), so a
             # peer's earlier connected_since can't be trusted; its session is counted from now.
             conn.executemany("UPDATE peers_seen SET connected_since = ? WHERE peer_id = ?",
                              [(now, pid) for pid in current])
-        else:
+        elif joins or leaves:
             conn.executemany(
                 "INSERT INTO peer_events (ts, peer_id, ip, account_id, event) VALUES (?, ?, ?, ?, ?)",
                 [(now, pid, current[pid][0], current[pid][2], "join") for pid in joins] +
-                [(now, pid, known[pid][1], known[pid][2], "leave") for pid in leaves])
-        conn.commit()
+                [(now, pid, known[pid][1], known[pid][3], "leave") for pid in leaves])
+        if writes:
+            conn.commit()
+
+        for pid in leaves:
+            known[pid][0] = False
+        for pid, (ip, port, acct) in current.items():
+            prev_acct = known[pid][3] if pid in known else None
+            known[pid] = [True, ip, port, acct or prev_acct]
+        if len(known) > 20000:  # bound memory: forget long-gone peers (their rows stay in the DB)
+            for pid in [p for p, k in known.items() if not k[0]][:len(known) - 20000]:
+                del known[pid]
+        self._prev_peer_sample = now
         return (0, 0) if baseline else (len(joins), len(leaves))
 
     def _peer_row(self, pid, ip, port, account, current, nxt):
@@ -1729,6 +1905,7 @@ def run_loop(name, config, collector, table, cols, db_path, stop, prune=False, e
                     conn.execute(f"DELETE FROM {old} WHERE ts < ?", (cutoff,))
                 conn.execute("DELETE FROM peers_seen WHERE connected = 0 AND last_seen < ?", (cutoff,))
                 conn.commit()
+                DATA_GEN.bump()
             except Exception as e:
                 print(f"[{name}] retention cleanup error: {e}", flush=True)
         try:
@@ -1756,6 +1933,7 @@ class App:
         self.logs = logs
         self.host_checks = {"time": None, "running": True, "items": []}  # filled once at startup
         self.db_path = os.path.join(BASE_DIR, config.get("db_path"))
+        self.pool = DBPool(self.db_path)
 
 
 MAX_RANGE_SEC = 366 * 86400
@@ -1819,6 +1997,22 @@ def make_handler(app, hosts):
             return True
 
         @staticmethod
+        def _with_conn(fn):
+            with app.pool.conn() as conn:
+                return fn(conn)
+
+        def _send_cached(self, key, compute):
+            """Serve a JSON response from the cache while no new data has been stored; on a miss,
+            compute and serialise it once for every client asking for the same view."""
+            body = CACHE.get_or_compute(key, lambda: json.dumps(compute()).encode())
+            return self._send(200, body)
+
+        def _ping_stats(self, rng):
+            # Shared by /api/peers and /api/shard; ping data only changes once per ping round.
+            return CACHE.get_or_compute(("pingstats", rng), lambda: self._with_conn(
+                lambda c: app.pinger.stats(c, rng)))
+
+        @staticmethod
         def _qnum(q, name, default, lo, hi, cast=float):
             raw = q.get(name, [str(default)])[0]
             try:
@@ -1852,61 +2046,54 @@ def make_handler(app, hosts):
             # Only API routes take ?range=; static files ignore query strings.
             rng = self._qnum(q, "range", 3600, 60, MAX_RANGE_SEC) if u.path.startswith("/api/") else None
             if u.path == "/api/logs":
-                conn = db_connect(app.db_path)
-                try:
-                    body = app.logs.query(conn, rng, q.get("level", ["all"])[0].upper(),
-                                          q.get("q", [""])[0].strip()[:200])
-                finally:
-                    conn.close()
-                return self._send(200, body)
+                level, text = q.get("level", ["all"])[0].upper(), q.get("q", [""])[0].strip()[:200]
+                return self._send_cached(("logs", rng, level, text), lambda: self._with_conn(
+                    lambda c: app.logs.query(c, rng, level, text)))
             if u.path == "/api/shard":
-                conn = db_connect(app.db_path)
-                try:
-                    ping, _ = app.pinger.stats(conn, rng)
-                finally:
-                    conn.close()
-                account = app.near.latest.get("validator_account_id") or app.config.get("validator_account_id")
-                return self._send(200, app.near.shard_table(
-                    account, lambda ip, port: app.pinger.lookup(ping, ip, port),
-                    q.get("endorsers", ["0"])[0] == "1"))
+                endorsers = q.get("endorsers", ["0"])[0] == "1"
+
+                def shard():
+                    ping, _ = self._ping_stats(rng)
+                    account = app.near.latest.get("validator_account_id") or app.config.get("validator_account_id")
+                    return app.near.shard_table(account, lambda ip, port: app.pinger.lookup(ping, ip, port), endorsers)
+                return self._send_cached(("shard", rng, endorsers), shard)
             if u.path == "/api/peers":
-                conn = db_connect(app.db_path)
-                try:
-                    table = app.near.peers_table(conn, rng)
-                    ping, ping_bucket = app.pinger.stats(conn, rng)
-                finally:
-                    conn.close()
-                for row in table["peers"]:
-                    row["ping"] = app.pinger.lookup(ping, row["ip"], row["port"])
-                cfg = app.config.snapshot()
-                table["ping"] = {"enabled": cfg["ping_enabled"], "method": cfg["ping_method"],
-                                 "interval": cfg["ping_interval_seconds"], "error": app.pinger.error,
-                                 "last_round": app.pinger.last_round, "bucket": ping_bucket}
-                table["now"] = time.time()
-                table["range"] = rng
-                return self._send(200, table)
+                def peers():
+                    table = self._with_conn(lambda c: app.near.peers_table(c, rng))
+                    ping, ping_bucket = self._ping_stats(rng)
+                    for row in table["peers"]:
+                        row["ping"] = app.pinger.lookup(ping, row["ip"], row["port"])
+                    cfg = app.config.snapshot()
+                    table["ping"] = {"enabled": cfg["ping_enabled"], "method": cfg["ping_method"],
+                                     "interval": cfg["ping_interval_seconds"], "error": app.pinger.error,
+                                     "last_round": app.pinger.last_round, "bucket": ping_bucket}
+                    table["now"] = time.time()
+                    table["range"] = rng
+                    return table
+                return self._send_cached(("peers", rng), peers)
             if u.path == "/api/metrics":
                 points = self._qnum(q, "points", 720, 10, MAX_POINTS, int)
-                interval = app.config.interval
-                # bucket >= range/points, so every series (incl. the zero-filled log series) has
-                # at most ~points entries however large `range` is.
-                bucket = max(interval, math.ceil(rng / points))
-                ping_bucket = max(bucket, int(app.config.get("ping_interval_seconds")))
-                since = time.time() - rng
-                conn = db_connect(app.db_path)
-                try:
-                    body = {
-                        "now": time.time(), "range": rng, "bucket": bucket, "interval": interval,
-                        "system": db_query(conn, "system", SYSTEM_COLS, since, bucket),
-                        "near": db_query(conn, "near", NEAR_COLS, since, bucket),
-                        "versions": version_changes(conn, since),
-                        "logs": app.logs.series(conn, since, max(bucket, 60)),
-                        "ping": {**db_query(conn, "ping_rounds", PING_COLS, since, ping_bucket),
-                                 "bucket": ping_bucket},
-                    }
-                finally:
-                    conn.close()
-                return self._send(200, body)
+
+                def metrics():
+                    interval = app.config.interval
+                    # bucket >= range/points, so every series (incl. the zero-filled log series) has
+                    # at most ~points entries however large `range` is.
+                    bucket = max(interval, math.ceil(rng / points))
+                    ping_bucket = max(bucket, int(app.config.get("ping_interval_seconds")))
+                    since = time.time() - rng
+
+                    def query(conn):
+                        return {
+                            "now": time.time(), "range": rng, "bucket": bucket, "interval": interval,
+                            "system": db_query(conn, "system", SYSTEM_COLS, since, bucket),
+                            "near": db_query(conn, "near", NEAR_COLS, since, bucket),
+                            "versions": version_changes(conn, since),
+                            "logs": app.logs.series(conn, since, max(bucket, 60)),
+                            "ping": {**db_query(conn, "ping_rounds", PING_COLS, since, ping_bucket),
+                                     "bucket": ping_bucket},
+                        }
+                    return self._with_conn(query)
+                return self._send_cached(("metrics", rng, points), metrics)
             return self._static(u.path)
 
         def do_POST(self):

@@ -117,7 +117,7 @@ Settings are stored in `config.json` (created on first run). You can change them
 | `retention_hours` | `24` | Samples older than this are deleted |
 | `rpc_url` | `http://127.0.0.1:3030` | Endpoint for `/status`, `/network_info` and JSON-RPC. Use your own node to see its peers and sync state; a public NEAR RPC endpoint also works |
 | `validators_rpc_url` | *(blank = `rpc_url`)* | A separate endpoint for the large `validators` call |
-| `validators_interval_seconds` | `60` | How often `validators` is queried. It runs in the background, so a slow call doesn't hold up 1s sampling |
+| `validators_interval_seconds` | `120` | How often `validators` is queried (~400 KB on mainnet). It runs in the background, so a slow call doesn't hold up 1s sampling |
 | `validator_account_id` | *(blank)* | The pool account to track (`<pool>.poolv1.near`). If blank, the server uses the `validator_account_id` that your node reports |
 | `disk_path` | `/` | The mount whose usage is tracked. Set it to the mount that holds `~/.near` |
 | `process_name` | `neard` | The process whose CPU and memory are tracked |
@@ -140,7 +140,7 @@ The server only answers requests addressed to `localhost`, this machine's hostna
 
 ## Notes
 
-- In 1s mode the server makes about 2 RPC requests per second. Public RPCs will rate-limit that (HTTP 429), so use 1s mode against your own node.
+- In 1s mode the server calls `/status` every second and `/network_info` every 10 seconds. Public RPCs will rate-limit that (HTTP 429), so use 1s mode against your own node.
 - At 1s sampling, 24 hours is about 86k rows per table, which SQLite handles easily. The API averages samples into time buckets, so a chart never draws more than about 600 points.
 - The seat price shown is the lowest stake in the current active set.
 - `install.sh` sets the dashboard up as a systemd service. `near-node-dashboard.service` is an example unit file if you'd rather do it by hand.

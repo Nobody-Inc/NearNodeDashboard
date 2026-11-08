@@ -636,6 +636,7 @@ function trendHtml(s, def, opts = {}) {
 function renderCharts(data) {
   const range = data.range;
   for (const def of CHARTS) {
+    if (!sectionOpen(def.group)) continue;   // redrawn when the section is opened
     const src = data[def.src];
     const ts = src.t;
     let any = false;
@@ -1198,7 +1199,7 @@ document.querySelector("#shardTable thead").addEventListener("click", e => {
 });
 document.getElementById("shardEndorsers").addEventListener("change", e => {
   try { localStorage.setItem("nvs-shard-endorsers", e.target.checked ? "1" : "0"); } catch {}
-  refresh();
+  invalidate(["shard"]);
 });
 
 // ---------------------------------------------------------------- data loop
@@ -1213,27 +1214,67 @@ async function getJSON(url) {
   if (!r.ok) throw new Error(body.error || `${url} returned HTTP ${r.status}`);
   return body;
 }
+// Polling. Each kind of data is fetched only as often as it can change, only for sections that
+// are open and collecting, and not at all while the tab is hidden. A cheap 1-second tick decides
+// what's due; it makes no request unless something is.
+const POLL_EVERY = { peers: 30, shard: 60, logs: 15 };      // seconds
+const lastFetch = { core: 0, peers: 0, shard: 0, logs: 0 };  // core = charts + header (/api/metrics, /api/latest)
+function coreEvery() {
+  // New samples arrive once per collection interval, and a chart point covers one bucket
+  // (e.g. 144 s on the 24h view), so polling faster than the longer of the two changes nothing.
+  const iv = config?.fast_mode ? 1 : (config?.interval_seconds || 60);
+  return Math.min(60, Math.max(1, iv, lastData?.bucket || 0));
+}
+const sectionOpen = key => !collapsed.includes(key);
+function wanted(group) {
+  if (group === "peers") return config?.collect_peers !== false && (sectionOpen("peers") || sectionOpen("node"));
+  if (group === "shard") return config?.collect_validator !== false && sectionOpen("shard");
+  if (group === "logs") return config?.collect_logs !== false && sectionOpen("node");
+  return true;
+}
+function invalidate(groups) {   // make these groups due now, then poll
+  for (const g of groups) lastFetch[g] = 0;
+  refresh();
+}
+
 let refreshing = false, refreshQueued = false;
 async function refresh() {
   if (refreshing) { refreshQueued = true; return; }
+  if (document.hidden) return;
+  const now = Date.now() / 1000;
+  const due = g => wanted(g) && now - lastFetch[g] >= (g === "core" ? coreEvery() : POLL_EVERY[g]) - 0.25;
+  const readingLog = !!document.querySelector("#logTable .msg.open");
+  const jobs = {};
+  if (due("core")) {
+    jobs.metrics = getJSON(`/api/metrics?range=${rangeSeconds()}&points=600`);
+    jobs.latest = getJSON("/api/latest");
+  }
+  if (due("peers")) jobs.peers = getJSON(`/api/peers?range=${rangeSeconds()}`);
+  if (due("shard")) {
+    const endorsers = document.getElementById("shardEndorsers").checked ? 1 : 0;
+    jobs.shard = getJSON(`/api/shard?range=${rangeSeconds()}&endorsers=${endorsers}`);
+  }
+  // Don't re-render the log table while someone is reading an expanded message.
+  if (due("logs") && !readingLog) jobs.logs = loadLogs();
+  const names = Object.keys(jobs);
+  if (!names.length) return;
   refreshing = true;
   try {
-    const endorsers = document.getElementById("shardEndorsers").checked ? 1 : 0;
-    const [m, l, p, s] = await Promise.all([
-      getJSON(`/api/metrics?range=${rangeSeconds()}&points=600`),
-      getJSON("/api/latest"),
-      getJSON(`/api/peers?range=${rangeSeconds()}`),
-      getJSON(`/api/shard?range=${rangeSeconds()}&endorsers=${endorsers}`),
-    ]);
-    lastData = m; latest = l; peers = p; shard = s;
-    // Don't re-render the log table while someone is reading an expanded message.
-    if (!document.querySelector("#logTable .msg.open")) await loadLogs().catch(() => {});
-    renderCharts(m);
-    renderHeader();
-    renderPeers();
-    renderShard();
-    renderChecks(l.host_checks);
-    if (!document.querySelector("#logTable .msg.open")) renderLogs();
+    const results = Object.fromEntries(names.map((n, i) => [n, null]));
+    (await Promise.all(Object.values(jobs))).forEach((r, i) => { results[names[i]] = r; });
+    const t = Date.now() / 1000;
+    if (jobs.metrics) { lastData = results.metrics; latest = results.latest; lastFetch.core = t; }
+    if (jobs.peers) { peers = results.peers; lastFetch.peers = t; }
+    if (jobs.shard) { shard = results.shard; lastFetch.shard = t; }
+    if (jobs.logs) lastFetch.logs = t;
+    if (jobs.metrics) {
+      renderCharts(lastData);
+      renderHeader();
+      renderChecks(latest.host_checks);
+    }
+    if (jobs.peers) renderPeers();
+    if (jobs.shard) renderShard();
+    if (jobs.logs && !document.querySelector("#logTable .msg.open")) renderLogs();
   } catch (e) {
     const b = document.getElementById("banner");
     b.textContent = "Cannot reach the stats server: " + e.message; b.classList.add("show");
@@ -1244,10 +1285,11 @@ async function refresh() {
 }
 
 function schedule() {
-  clearInterval(timer);
-  const iv = config?.fast_mode ? 1 : Math.min(config?.interval_seconds || 60, 15);
-  timer = setInterval(refresh, Math.max(1, iv) * 1000);
+  if (!timer) timer = setInterval(refresh, 1000);
 }
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) invalidate(["core"]);   // catch up straight away when the tab is shown again
+});
 
 async function loadConfig() {
   config = await getJSON("/api/config");
@@ -1268,7 +1310,7 @@ async function saveConfig(patch) {
   applySections();
   applyReadOnly();
   schedule();
-  setTimeout(refresh, 1500);
+  setTimeout(() => invalidate(["core", "peers", "shard", "logs"]), 1500);
 }
 
 // ---------------------------------------------------------------- read-only mode
@@ -1302,7 +1344,7 @@ document.getElementById("ranges").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
   range = b.dataset.r === "all" ? "all" : +b.dataset.r;
   try { localStorage.setItem("nvs-range", String(range)); } catch {}
-  markRange(); refresh();
+  markRange(); invalidate(["core", "peers", "shard", "logs"]);
 });
 document.getElementById("fast").addEventListener("change", async e => {
   try { await saveConfig({ fast_mode: e.target.checked }); }
@@ -1362,6 +1404,12 @@ document.querySelectorAll(".sec-head").forEach(btn => btn.addEventListener("clic
   collapsed = collapsed.includes(key) ? collapsed.filter(k => k !== key) : [...collapsed, key];
   try { localStorage.setItem("nvs-collapsed", JSON.stringify(collapsed)); } catch {}
   applySections();
+  if (sectionOpen(key)) {
+    if (lastData) renderCharts(lastData);   // charts in collapsed sections are skipped while closed
+    if (key === "peers" && peers) renderPeers();
+    if (key === "shard" && shard) renderShard();
+    refresh();
+  }
 }));
 applySections();
 
