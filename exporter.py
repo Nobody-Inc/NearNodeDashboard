@@ -17,15 +17,15 @@ import hmac
 import html
 import json
 import math
-import os
-import socket
 import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
-from server import APP_VERSION, MAX_RPC_RESPONSE_BYTES, REQUEST_TIMEOUT_SEC, make_server
+from dashboard.core.httpserver import REQUEST_TIMEOUT_SEC, make_server
+from dashboard.core.util import MAX_RPC_RESPONSE_BYTES
+from dashboard.core.version import APP_VERSION
 
 VERSION = APP_VERSION
 MIN_INTERVAL, MAX_INTERVAL = 15, 3600
@@ -59,13 +59,18 @@ def build_snapshot(base):
     cfg = fetch(base, "/api/config")
     latest = fetch(base, "/api/latest")
     metrics = fetch(base, "/api/metrics?range=3600&points=60")   # last values + 1-hour sums
-    health = fetch(base, "/api/health")
-    peers = fetch(base, "/api/peers?range=3600")
-    logs = fetch(base, "/api/logs?range=3600")
-    shard = fetch(base, "/api/shard?range=3600")
+    # Module endpoints exist only for enabled modules (older dashboards don't list them: both ran).
+    modules = latest.get("modules")
+    if not isinstance(modules, list):
+        modules = ["system", "near"]
+    has_system, has_near = "system" in modules, "near" in modules
+    health = fetch(base, "/api/health") if has_system else {}
+    peers = fetch(base, "/api/peers?range=3600") if has_near else {}
+    logs = fetch(base, "/api/logs?range=3600") if has_near else {}
+    shard = fetch(base, "/api/shard?range=3600") if has_near else {}
     sysm, near, ping = metrics.get("system", {}), metrics.get("near", {}), metrics.get("ping", {})
     S = lambda k: last_value(sysm, k)  # noqa: E731
-    S_sum = lambda k: sum(v for v in (sysm.get(k) or []) if num(v) is not None)  # noqa: E731
+    S_sum = lambda k: sum(v for v in (sysm.get(k) or []) if num(v) is not None) if has_system else None  # noqa: E731
     N = lambda k: last_value(near, k)  # noqa: E731
 
     account = latest.get("validator_account_id") or None
@@ -80,7 +85,7 @@ def build_snapshot(base):
         "chain_id": latest.get("chain_id"),
         "dashboard_version": latest.get("app_version"),
         "collection_interval_seconds": 1 if cfg.get("fast_mode") else cfg.get("interval_seconds"),
-        "data_collected_at": num(latest.get("time")),
+        "data_collected_at": num(latest.get("time")) or num(latest.get("sampled_at")),
         "system": {
             "cpu_ratio": pct(S("cpu_pct")), "load1": S("load1"),
             "memory_used_bytes": S("mem_used"), "memory_total_bytes": S("mem_total"), "memory_ratio": pct(S("mem_pct")),
@@ -118,12 +123,12 @@ def build_snapshot(base):
         "filesystems": [{"mount": f.get("mount"), "fstype": f.get("fstype"), "used_bytes": f.get("used"),
                          "size_bytes": f.get("total"), "used_ratio": pct(f.get("pct")),
                          "inode_ratio": pct(f.get("inode_pct"))} for f in health.get("filesystems", [])],
-        "alerts": [{k: a.get(k) for k in ("id", "severity", "title", "detail", "since")} for a in health.get("alerts", [])],
+        "alerts": [{k: a.get(k) for k in ("id", "severity", "title", "detail", "since")} for a in latest.get("alerts") or []],
         "checks": {k: {kk: vv for kk, vv in v.items() if kk in ("status", "detail", "offset_ms", "synced", "ms", "security",
                                                                  "total", "reboot_required", "unexpected", "certs", "drives")}
                    for k, v in (health.get("checks") or {}).items()},
         "node_status": {
-            "rpc_up": 0 if latest.get("error") else 1, "rpc_error": latest.get("error"),
+            "rpc_up": None if not has_near else 0 if latest.get("error") else 1, "rpc_error": latest.get("error"),
             "synced": N("synced"), "syncing": 1 if latest.get("syncing") else 0,
             "block_height": num(latest.get("block_height")) or N("block_height"),
             "blocks_per_second": N("blocks_per_sec"), "block_lag_seconds": N("block_lag_sec"),
@@ -137,7 +142,7 @@ def build_snapshot(base):
         },
         "validator": {
             "status": latest.get("validator_status"),
-            "active": 1 if (latest.get("validator_status") or "").startswith("Active") else 0,
+            "active": None if not has_near else 1 if (latest.get("validator_status") or "").startswith("Active") else 0,
             "in_next_epoch": None if latest.get("in_next_epoch") is None else int(bool(latest.get("in_next_epoch"))),
             "kickout_reason": latest.get("kickout_reason"),
             "rank": num(latest.get("rank")), "validators": N("num_validators"),
@@ -146,7 +151,7 @@ def build_snapshot(base):
             "epoch_blocks_remaining": num(latest.get("epoch_blocks_remaining")),
             "uptime_ratio": pct(num(latest.get("uptime_pct"))),
             **{f"{k}_{x}": N(f"{k}_{x}") for k in ("blocks", "chunks", "endorsements") for x in ("produced", "expected")},
-            "validators_data_stale": int(bool(latest.get("validators_stale"))),
+            "validators_data_stale": int(bool(latest.get("validators_stale"))) if has_near else None,
             "shards": shard.get("shards") if shard.get("is_validator") else None,
         },
         "peers": {

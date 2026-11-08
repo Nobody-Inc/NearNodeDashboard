@@ -104,7 +104,7 @@ Example Prometheus job:
 
 The page footer shows the release and the git commit the dashboard was installed from, e.g. `v1.1.0 · d7a37cc (2026-11-08)`. The commit links to GitHub, so you can compare it with the latest there. The exporter publishes the same as `near_node_dashboard_info`.
 
-The version comes from the latest release tag (`vX.Y.Z`) the installed commit descends from. A build made after the latest tag shows how far past it is, e.g. `v1.1.0+3` means three commits after v1.1.0. With no tags (or no git), it falls back to `APP_VERSION` in `server.py`.
+The version comes from the latest release tag (`vX.Y.Z`) the installed commit descends from. A build made after the latest tag shows how far past it is, e.g. `v1.1.0+3` means three commits after v1.1.0. With no tags (or no git), it falls back to `APP_VERSION` in `dashboard/core/version.py`.
 
 **Making a release:** tag the commit and push the tag. Servers pick it up on their next `git pull && sudo ./install.sh` (`git pull` fetches new tags automatically).
 
@@ -195,6 +195,7 @@ Cheap metrics are sampled with every collection; slower checks run on their own 
 
 | Key | Default | Meaning |
 |---|---|---|
+| `modules` | `["system", "near"]` | Which modules run (see [Modules](#modules)). `["system"]` makes it a plain server monitor with no NEAR calls; `["near"]` skips host statistics. Can only be set in `config.json`, and takes effect when the dashboard restarts |
 | `interval_seconds` | `60` | How often samples are collected |
 | `fast_mode` | `false` | Collect every second, overriding `interval_seconds` (the **1s mode** toggle) |
 | `retention_hours` | `24` | Samples older than this are deleted |
@@ -224,6 +225,39 @@ Cheap metrics are sampled with every collection; slower checks run on their own 
 Command-line options: `--host` (bind address, default `0.0.0.0`; `::` for IPv4+IPv6; `127.0.0.1` for local only), `--port`, `--config`, and `--allow-host NAME` (repeatable).
 
 The server only answers requests addressed to `localhost`, this machine's hostname, or an IP address; this blocks DNS-rebinding attacks. If you reach the dashboard by another name, such as a DNS name, a reverse proxy or an SSH config alias, start it with `--allow-host that.name`; otherwise you'll get `403 Host not allowed`.
+
+## Modules
+
+The dashboard is a small core plus modules. Each module brings its own settings, database tables, collectors, API endpoints, alert rules and part of the page; the `modules` key in `config.json` picks which ones run. The page hides the sections and settings of modules that aren't running, and the exporter leaves out their metrics.
+
+| Module | What it covers | Endpoints |
+|---|---|---|
+| `system` | Host statistics (CPU, memory, disk, network, the USE metrics), the slower health and security checks, and their alerts | `/api/health` |
+| `near` | The NEAR node, validator, peers and peer pings, the neard service log, same-shard validators, epoch markers, the startup host checks (sysctl, P2P firewall), and their alerts | `/api/peers`, `/api/logs`, `/api/shard` |
+
+The core serves `/api/config`, `/api/latest`, `/api/metrics` and `/api/alerts`, merging in what each module provides.
+
+```
+server.py                    entry point (python3 server.py ...)
+exporter.py                  optional exporter service
+dashboard/core/              settings, SQLite storage, collection loop, alert engine, HTTP API
+  module.py                  the Module base class: the contract a module implements
+  app.py                     loads the enabled modules and starts everything
+dashboard/modules/system/    stats.py (collectors), checks.py (health checks), __init__.py (module)
+dashboard/modules/near/      collector.py, pinger.py, logs.py, hostchecks.py, __init__.py (module)
+static/index.html            page layout
+static/js/core.js            charts, header, alerts, polling, settings, and the page-module registry
+static/js/system.js          the system module's charts and health tables
+static/js/near.js            the near module's charts, tables and header tiles
+static/js/start.js           starts the page
+```
+
+**Adding a module:**
+1. Create `dashboard/modules/<name>/__init__.py` with a `Module` subclass and `MODULE = YourModule`.
+2. Declare its `settings`, its time-series tables in `series`, and any other `schema` or `retention` statements.
+3. Implement whichever of `start`, `latest`, `metrics`, `routes`, `alerts` and `describe` it needs (see `dashboard/core/module.py`).
+4. Add its name to `AVAILABLE_MODULES` in `dashboard/core/app.py`.
+5. For the page, add a `static/js/<name>.js` that calls `registerModule({...})` (the fields are described in `core.js`), include it in `index.html` before `start.js`, and mark its sections and settings with `data-module="<name>"`.
 
 ## Notes
 
