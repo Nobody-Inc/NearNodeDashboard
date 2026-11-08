@@ -12,7 +12,7 @@ Requirements: Linux with systemd, git and Python 3.9+ (Ubuntu 22.04+ and Debian 
 
 ```bash
 sudo apt install -y git        # if git isn't installed yet
-git clone https://github.com/Nobody-Inc/NearValidatorStats.git ~/near-node-dashboard
+git clone https://github.com/Nobody-Inc/NearNodeDashboard.git ~/near-node-dashboard
 ```
 
 **2. Run the installer:**
@@ -67,8 +67,8 @@ Requests must address the server by IP, `localhost` or its own hostname. This bl
 ### Running it on your own computer instead
 
 ```bash
-git clone https://github.com/Nobody-Inc/NearValidatorStats.git
-cd NearValidatorStats
+git clone https://github.com/Nobody-Inc/NearNodeDashboard.git
+cd NearNodeDashboard
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python server.py            # http://127.0.0.1:8787 (add --host 127.0.0.1 to keep it local)
