@@ -2,6 +2,8 @@
 same-shard validators, epoch markers and the startup host checks."""
 
 import json
+import os
+import re
 import threading
 import time
 
@@ -14,6 +16,25 @@ from dashboard.modules.near.collector import NEAR_COLS, NearCollector, epoch_mar
 from dashboard.modules.near.hostchecks import run_host_checks
 from dashboard.modules.near.logs import LogCollector
 from dashboard.modules.near.pinger import PING_COLS, Pinger
+
+
+# Where the web page may point log_file (resolved, so a symlink can't lead elsewhere). Anything
+# else must be set in config.json on the server, by someone who already controls the machine.
+PAGE_LOG_DIRS = ("/var/log/", "/var/lib/docker/containers/", "/home/", "/srv/", "/opt/", "/data/", "/mnt/")
+LOG_NAME_RE = re.compile(r"^[^/]+\.log(\.\d+)?$")
+
+
+def page_log_file(v):
+    if not v:
+        return
+    if not os.path.isabs(v):
+        raise ValueError("must be an absolute path")
+    real = os.path.realpath(v)
+    # Compare with the allowed directories as given and resolved (e.g. /home linked to a data disk).
+    allowed = PAGE_LOG_DIRS + tuple(os.path.realpath(d) + "/" for d in PAGE_LOG_DIRS)
+    if not LOG_NAME_RE.match(os.path.basename(real)) or not real.startswith(allowed):
+        raise ValueError("must be a .log file under " + ", ".join(d.rstrip("/") for d in PAGE_LOG_DIRS)
+                         + " (other paths can only be set in config.json on the server)")
 
 
 class NearModule(Module):
@@ -35,7 +56,9 @@ class NearModule(Module):
         # Where to read the neard log: "journald" (systemd unit) or "file" (plain or Docker json logs).
         "log_source": Setting("journald", choice("journald", "file")),
         "log_unit": Setting("neard", text),
-        "log_file": Setting("", text),
+        # From the web page only a .log file in a usual log location (see page_log_file); any path
+        # can be set in config.json on the server.
+        "log_file": Setting("", text, page_check=page_log_file),
         "log_poll_seconds": Setting(10, integer(1, 3600)),
         # Peer pinging: every active peer once per round; "tcp" times a connect to the NEAR port.
         "ping_enabled": Setting(True, boolean),

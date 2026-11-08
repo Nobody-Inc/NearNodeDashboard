@@ -20,10 +20,13 @@ class Setting:
     page       what a change from the web page may do: "allow", "ignore" (silently skipped; file
                only) or "reject" (an error, e.g. read_only)
     invalid    value to use when config.json holds an invalid value (default: the default), e.g.
-               read_only fails closed to True"""
+               read_only fails closed to True
+    page_check extra validation for a value set from the web page (not config.json), e.g. log_file
+               may only point at log files from the page"""
 
-    def __init__(self, default, parse=None, page="allow", invalid=None):
+    def __init__(self, default, parse=None, page="allow", invalid=None, page_check=None):
         self.default, self.parse, self.page, self.invalid = default, parse, page, invalid
+        self.page_check = page_check
 
 
 # --------------------------------------------------------------------------- reusable parsers
@@ -95,9 +98,11 @@ def existing_path(v):
     return v
 
 
-def validate(registry, patch, from_file=False):
+def validate(registry, patch, from_file=False, current=None):
     """Validate a settings change. `from_file` is True when loading config.json; only then may
-    file-only keys (read_only, modules, db_path) be set, so the page can never unlock itself."""
+    file-only keys (read_only, modules, db_path) be set, so the page can never unlock itself.
+    `current` (page changes): values equal to the current setting are left alone, so a value set
+    in config.json that the page couldn't set itself doesn't block saving the other settings."""
     if not isinstance(patch, dict):
         raise ValueError("settings must be a JSON object")
     out = {}
@@ -110,7 +115,12 @@ def validate(registry, patch, from_file=False):
                 raise ValueError(f"{key} can only be changed by editing config.json on the server")
             continue
         try:
-            out[key] = s.parse(value) if s.parse else value
+            value = s.parse(value) if s.parse else value
+            if not from_file and current is not None and current.get(key) == value:
+                continue
+            if not from_file and s.page_check:
+                s.page_check(value)
+            out[key] = value
         except (ValueError, TypeError) as e:
             msg = str(e)
             raise ValueError(f"{key} {msg}" if msg.startswith(("must", "is required")) else f"{key}: {msg}")
@@ -169,7 +179,7 @@ class Config:
         with self.lock:
             if self.data.get("read_only"):
                 raise PermissionError(READ_ONLY_MESSAGE)
-        clean = validate(self.registry, patch)
+        clean = validate(self.registry, patch, current=self.snapshot())
         with self.lock:
             if self.data.get("read_only"):  # re-check under the same lock as the write
                 raise PermissionError(READ_ONLY_MESSAGE)

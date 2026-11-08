@@ -212,7 +212,7 @@ Cheap metrics are sampled with every collection; slower checks run on their own 
 | `collect_system` / `collect_node` / `collect_validator` / `collect_peers` | `true` | Turn data collection on or off for each section (also under **Settings → Data collection**). When off, that section's sampling stops, along with any RPC calls only it needs. Existing data is kept until retention deletes it. `collect_validator` also feeds the shard table; `collect_peers` covers peer tracking, churn and pings |
 | `collect_logs` | `true` | Collect WARN / ERROR lines from the neard service log |
 | `log_source` | `journald` | `journald` reads `journalctl -u <log_unit>`; `file` follows `log_file` (plain neard output or Docker json-file logs), and handles log rotation |
-| `log_unit` / `log_file` | `neard` / *(blank)* | The systemd unit or the log file path |
+| `log_unit` / `log_file` | `neard` / *(blank)* | The systemd unit or the log file path. From the web page, `log_file` must be a `.log` file (or rotated `.log.N`) under `/var/log`, `/var/lib/docker/containers`, `/home`, `/srv`, `/opt`, `/data` or `/mnt`, with symlinks resolved; any other path can be set in `config.json` on the server |
 | `log_poll_seconds` | `10` | How often to check the log for new lines |
 | `p2p_port` | `24567` | neard's P2P port (`network.addr` in `~/.near/config.json`), checked for inbound access at startup |
 | `firewall_check_sudo` | `false` | Read firewall rules with `sudo -n` when not root. Only enable it if the service user has passwordless sudo for `ufw`/`iptables`/`nft`/`firewall-cmd`; otherwise each attempt is logged as a failed sudo authentication |

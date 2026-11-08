@@ -11,7 +11,7 @@ import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
-from dashboard.core.httpserver import REQUEST_TIMEOUT_SEC, host_of
+from dashboard.core.httpserver import REQUEST_TIMEOUT_SEC, content_security_policy, host_of
 from dashboard.core.storage import CACHE
 from dashboard.core.util import valid_ip
 from dashboard.core.version import BASE_DIR
@@ -78,7 +78,7 @@ def make_handler(app, hosts):
     module_routes = {}
     for m in app.modules.values():
         module_routes.update(m.routes())
-    static_cache, static_lock = {}, threading.Lock()   # path -> (mtime_ns, size, etag, Body)
+    static_cache, static_lock = {}, threading.Lock()   # path -> (mtime_ns, size, etag, Body, CSP or None)
 
     class Handler(BaseHTTPRequestHandler):
         # Drop a connection that sends nothing for this long, so a slow or stalled client can't
@@ -90,7 +90,7 @@ def make_handler(app, hosts):
         def log_message(self, fmt, *args):
             pass
 
-        def _send(self, code, body, ctype="application/json", cache="no-store", etag=None):
+        def _send(self, code, body, ctype="application/json", cache="no-store", etag=None, csp=None):
             if not isinstance(body, (bytes, bytearray)):
                 body = json.dumps(body).encode()
             compressible = len(body) >= COMPRESS_MIN_BYTES and ctype.startswith(COMPRESSIBLE)
@@ -107,6 +107,8 @@ def make_handler(app, hosts):
             self.send_header("Cache-Control", cache)
             if etag:
                 self.send_header("ETag", etag)
+            if csp:
+                self.send_header("Content-Security-Policy", csp)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
             self.end_headers()
@@ -223,7 +225,9 @@ def make_handler(app, hosts):
                 hit = static_cache.get(full)
             if not hit or hit[:2] != (st.st_mtime_ns, st.st_size):
                 with open(full, "rb") as f:
-                    hit = (st.st_mtime_ns, st.st_size, f'"{st.st_mtime_ns:x}-{st.st_size:x}"', Body(f.read()))
+                    data = f.read()
+                csp = content_security_policy(data) if ctype.startswith("text/html") else None
+                hit = (st.st_mtime_ns, st.st_size, f'"{st.st_mtime_ns:x}-{st.st_size:x}"', Body(data), csp)
                 with static_lock:
                     static_cache[full] = hit
             etag = hit[2]
@@ -233,6 +237,6 @@ def make_handler(app, hosts):
                 self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 return None
-            return self._send(200, hit[3], ctype, cache="no-cache", etag=etag)
+            return self._send(200, hit[3], ctype, cache="no-cache", etag=etag, csp=hit[4])
 
     return Handler

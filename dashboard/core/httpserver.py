@@ -1,6 +1,9 @@
 """HTTP server plumbing: connection limits, IPv4/IPv6 listening, Host-header allowlist helpers."""
 
+import base64
+import hashlib
 import ipaddress
+import re
 import socket
 import threading
 from http.server import ThreadingHTTPServer
@@ -8,6 +11,20 @@ from http.server import ThreadingHTTPServer
 import psutil
 
 from dashboard.core.util import valid_ip
+
+
+INLINE_SCRIPT_RE = re.compile(rb"<script>(.*?)</script>", re.S)
+
+
+def content_security_policy(html):
+    """CSP for an HTML page: scripts only from this server plus the page's own inline <script>
+    blocks (allowed by hash, so an injected script can't run), no plugins, no framing. Inline
+    styles stay allowed (the pages use style attributes)."""
+    hashes = " ".join(f"'sha256-{base64.b64encode(hashlib.sha256(m).digest()).decode()}'"
+                      for m in INLINE_SCRIPT_RE.findall(html))
+    return ("default-src 'self'; script-src 'self'" + (f" {hashes}" if hashes else "") + "; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+            "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
 
 def host_of(value):

@@ -23,7 +23,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
-from dashboard.core.httpserver import REQUEST_TIMEOUT_SEC, make_server
+from dashboard.core.httpserver import REQUEST_TIMEOUT_SEC, content_security_policy, make_server
 from dashboard.core.util import MAX_RPC_RESPONSE_BYTES, finite as num
 from dashboard.core.version import APP_VERSION
 
@@ -435,6 +435,8 @@ def make_handler(exp, token):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            if ctype.startswith("text/html"):
+                self.send_header("Content-Security-Policy", content_security_policy(body))
             self.end_headers()
             self.wfile.write(body)
 
