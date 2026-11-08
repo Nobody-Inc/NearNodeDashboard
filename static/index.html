@@ -20,7 +20,7 @@
   --axis: #c3c2b7;
   --border: rgba(11,11,11,0.10);
   --wash: rgba(11,11,11,0.04);
-  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #e87ba4;
   --good: #0ca30c; --warning: #fab219; --serious: #ec835a; --critical: #d03b3b;
   --good-text: #006300;
   --accent: #2a78d6;
@@ -30,14 +30,14 @@
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --text: #f0efec; --text-2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
-    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --good-text: #0ca30c; --accent: #3987e5;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #d55181; --good-text: #0ca30c; --accent: #3987e5;
   }
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --text: #f0efec; --text-2: #c3c2b7; --muted: #898781;
   --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10); --wash: rgba(255,255,255,0.05);
-  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --good-text: #0ca30c; --accent: #3987e5;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #d55181; --good-text: #0ca30c; --accent: #3987e5;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--page); color: var(--text);
@@ -82,6 +82,28 @@ h2 { font-size: 15px; font-weight: 650; margin: 28px 0 12px; color: var(--text);
 .sec.collapsed .sec-body { display: none; }
 .sec-off { font-size: 11px; font-weight: 600; color: var(--text-2); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; }
 .logpanel { margin-top: 16px; }
+.sec-body > .sub-h { margin-top: 22px; }
+.sec-body > .sub-h:first-child { margin-top: 4px; }
+.use { font-size: 12px; font-weight: 400; color: var(--text-2); }
+.use b { font-weight: 650; color: var(--text); margin-right: 3px; }
+.use .sep { color: var(--muted); margin: 0 6px; }
+.alerts { margin-bottom: 16px; }
+.alert-row { display: flex; gap: 10px; align-items: flex-start; background: var(--surface); border: 1px solid var(--border);
+  border-left: 4px solid var(--muted); border-radius: 8px; padding: 8px 12px; margin-bottom: 6px; font-size: 13px; }
+.alert-row.critical { border-left-color: var(--critical); }
+.alert-row.warning { border-left-color: var(--warning); }
+.alert-row.info { border-left-color: var(--s1); }
+.alert-row .t { font-weight: 600; }
+.alert-row .d { color: var(--text-2); }
+.alert-row .since { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.alerts-ok { color: var(--text-2); font-size: 13px; padding: 2px 0 4px; }
+.meter { display: inline-block; width: 90px; height: 6px; border-radius: 3px; background: var(--grid); vertical-align: middle; margin-right: 8px; overflow: hidden; }
+.meter i { display: block; height: 100%; border-radius: 3px; background: var(--s1); }
+.meter.warn i { background: var(--warning); } .meter.crit i { background: var(--critical); }
+.red-tiles { margin-bottom: 16px; }
+#fsTable td, #healthTable td { vertical-align: top; }
+#healthTable td.detail { white-space: normal; color: var(--text-2); min-width: 300px; }
+.fs-wrap { margin-bottom: 12px; }
 .checkpanel { margin-bottom: 16px; }
 #checkTable td { vertical-align: top; }
 #checkTable td.detail { white-space: normal; min-width: 320px; color: var(--text-2); }
@@ -203,16 +225,53 @@ tr.gone:hover td { opacity: 0.85; }
     server and restart the dashboard.
   </div>
 
+  <div class="alerts" id="alerts">
+    <h3 class="sub-h">Alerts <span class="card-s" id="alertsInfo">symptom-based: sustained problems you'd notice, not single spikes</span></h3>
+    <div id="alertList"><div class="alerts-ok">Checking…</div></div>
+  </div>
   <div class="tiles" id="tiles"></div>
 
   <section class="sec" data-sec="system">
     <h2><button class="sec-head" aria-expanded="true"><span class="chev">▾</span><span>System</span></button><span class="sec-off" hidden>collection off</span></h2>
-    <div class="sec-body"><div class="grid" id="g-system"></div></div>
+    <div class="sec-body">
+      <h3 class="sub-h">CPU <span class="use" id="use-cpu"></span></h3>
+      <div class="grid" id="g-cpu"></div>
+      <h3 class="sub-h">Memory <span class="use" id="use-mem"></span></h3>
+      <div class="grid" id="g-mem"></div>
+      <h3 class="sub-h">Disk <span class="use" id="use-disk"></span></h3>
+      <div class="table-wrap fs-wrap">
+        <table id="fsTable">
+          <thead><tr><th>Filesystem</th><th>Type</th><th class="num">Used</th><th class="num">Size</th><th>Space</th><th>Inodes</th></tr></thead>
+          <tbody><tr><td colspan="6" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="grid" id="g-disk"></div>
+      <h3 class="sub-h">Network <span class="use" id="use-net"></span></h3>
+      <div class="grid" id="g-net"></div>
+    </div>
+  </section>
+
+  <section class="sec" data-sec="health">
+    <h2><button class="sec-head" aria-expanded="true"><span class="chev">▾</span><span>Health &amp; security</span></button><span class="sec-off" hidden>collection off</span></h2>
+    <div class="sec-body">
+      <h3 class="sub-h">System health <span class="card-s" id="healthInfo"></span></h3>
+      <div class="table-wrap fs-wrap">
+        <table id="healthTable">
+          <thead><tr><th>Check</th><th>Status</th><th>Value</th><th>Details</th></tr></thead>
+          <tbody><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="grid" id="g-health"></div>
+      <h3 class="sub-h">Security &amp; logs</h3>
+      <div class="grid" id="g-security"></div>
+    </div>
   </section>
 
   <section class="sec" data-sec="node">
     <h2><button class="sec-head" aria-expanded="true"><span class="chev">▾</span><span>NEAR node</span></button><span class="sec-off" hidden>collection off</span></h2>
     <div class="sec-body">
+      <h3 class="sub-h">neard service <span class="card-s">RED: rate, errors, duration</span></h3>
+      <div class="tiles red-tiles" id="redTiles"></div>
       <div class="checkpanel">
         <h3 class="sub-h">Host checks <span class="card-s" id="checkStatus">running…</span></h3>
         <div class="table-wrap">
@@ -333,6 +392,7 @@ tr.gone:hover td { opacity: 0.85; }
       <label><input type="checkbox" name="collect_validator"><span>Validator<small>validators RPC; also feeds the shard table</small></span></label>
       <label><input type="checkbox" name="collect_peers"><span>Peers<small>peer tracking, churn and pings</small></span></label>
       <label><input type="checkbox" name="collect_logs"><span>Service log<small>WARN / ERROR lines from neard</small></span></label>
+      <label><input type="checkbox" name="collect_health"><span>Health &amp; security<small>DNS, clock, logins, log rates, SMART, patches, TLS</small></span></label>
     </fieldset>
     <div class="row2">
       <div class="field">
@@ -407,6 +467,23 @@ tr.gone:hover td { opacity: 0.85; }
         <label for="c-proc">Process name</label>
         <input type="text" id="c-proc" name="process_name" placeholder="neard">
       </div>
+    </div>
+    <div class="row2">
+      <div class="field">
+        <label for="c-dns">DNS check host</label>
+        <input type="text" id="c-dns" name="dns_check_host" placeholder="near.org">
+        <small>Resolved every minute to measure DNS time.</small>
+      </div>
+      <div class="field">
+        <label for="c-tls">Extra TLS hosts</label>
+        <input type="text" id="c-tls" name="tls_check_hosts" placeholder="example.com, api.example.com:8443">
+        <small>Certificate expiry is checked every 6 h (HTTPS RPC URLs always).</small>
+      </div>
+    </div>
+    <div class="field">
+      <label><input type="checkbox" name="health_checks_sudo"> Use passwordless sudo for SMART and IPMI checks</label>
+      <small>Off by default. Only turn on if the service user has passwordless sudo for smartctl / ipmitool;
+        otherwise every attempt is logged as a failed sudo login.</small>
     </div>
     <div class="field">
       <label><input type="checkbox" name="firewall_check_sudo"> Read firewall rules with passwordless sudo</label>
@@ -539,6 +616,27 @@ const crosshair = {
   }
 };
 
+// Dashed vertical line, labelled "epoch N", wherever a new epoch started in the range.
+let epochMarks = [];
+const epochLines = {
+  id: "epochLines",
+  afterDatasetsDraw(chart) {
+    if (!epochMarks.length) return;
+    const { ctx, chartArea: a, scales: { x } } = chart;
+    ctx.save();
+    ctx.strokeStyle = css("--muted"); ctx.lineWidth = 1; ctx.setLineDash([4, 3]);
+    ctx.fillStyle = css("--text-2"); ctx.font = '10px system-ui, -apple-system, "Segoe UI", sans-serif';
+    for (const m of epochMarks) {
+      const px = x.getPixelForValue(m.ts * 1000);
+      if (!isFinite(px) || px < a.left || px > a.right) continue;
+      ctx.beginPath(); ctx.moveTo(px, a.top); ctx.lineTo(px, a.bottom); ctx.stroke();
+      const label = m.epoch ? `epoch ${m.epoch}` : "new epoch", w = ctx.measureText(label).width;
+      ctx.fillText(label, px + 4 + w > a.right ? px - 4 - w : px + 4, a.top + 10);   // keep the label inside
+    }
+    ctx.restore();
+  }
+};
+
 const CHARTS = [];
 /**
  * def: { id, group, title, sub?, src, series:[{key,label,color,scale?}], fmt, axisFmt?, yMin?, yMax?,
@@ -582,7 +680,7 @@ function card(def) {
              ticks: { maxTicksLimit: 5, stepSize: def.stepSize, callback: (v, i, ticks) => (def.axisFmt || def.fmt)(v, ticks) } },
       },
     },
-    plugins: [crosshair],
+    plugins: [crosshair, epochLines],
   });
   CHARTS.push(def);
   return def;
@@ -636,8 +734,9 @@ function trendHtml(s, def, opts = {}) {
 
 function renderCharts(data) {
   const range = data.range;
+  epochMarks = data.epochs || [];
   for (const def of CHARTS) {
-    if (!sectionOpen(def.group)) continue;   // redrawn when the section is opened
+    if (!sectionOpen(CHART_SECTION[def.group] || def.group)) continue;   // redrawn when the section is opened
     const src = data[def.src];
     const ts = src.t;
     let any = false;
@@ -666,16 +765,17 @@ function renderCharts(data) {
 const lastOf = (arr) => { if (!arr) return null; for (let i = arr.length - 1; i >= 0; i--) if (isNum(arr[i])) return arr[i]; return null; };
 
 // ---------------------------------------------------------------- chart definitions
-card({ id: "cpu", group: "system", title: "CPU usage", src: "system", fmt: v => fmtPct(v), axisFmt: v => v + "%", yMax: 100,
+card({ id: "cpu", group: "cpu", title: "CPU usage", src: "system", fmt: v => fmtPct(v), axisFmt: v => v + "%", yMax: 100,
   series: [{ key: "cpu_pct", label: "System", color: "--s1" }, { key: "proc_cpu_pct", label: "neard", color: "--s2" }],
   subFn: src => { const l = lastOf(src.load1); return isNum(l) ? `load avg (1m) ${l.toFixed(2)}` : ""; },
   trend: (st, def) => trendHtml(st[0], def) });
-card({ id: "mem", group: "system", title: "Memory usage", src: "system", fmt: v => fmtBytes(v), axisFmt: fmtBytesAxis,
-  series: [{ key: "mem_used", label: "System used", color: "--s1" }, { key: "proc_rss", label: "neard RSS", color: "--s2" }],
+card({ id: "mem", group: "mem", title: "Memory used vs available", src: "system", fmt: v => fmtBytes(v), axisFmt: fmtBytesAxis,
+  series: [{ key: "mem_used", label: "Used", color: "--s1" }, { key: "mem_available", label: "Available", color: "--s3" },
+           { key: "proc_rss", label: "neard RSS", color: "--s2" }],
   headline: (st, src) => fmtPct(lastOf(src.mem_pct)),
   subFn: src => { const t = lastOf(src.mem_total), sw = lastOf(src.swap_pct); return isNum(t) ? `of ${fmtBytes(t)} · swap ${fmtPct(sw)}` : ""; },
   trend: (st, def) => trendHtml(st[0], def) });
-card({ id: "disk", group: "system", title: "Disk usage", src: "system", fmt: v => fmtBytes(v), axisFmt: fmtBytesAxis, beginAtZero: false,
+card({ id: "disk", group: "disk", title: "Disk usage", src: "system", fmt: v => fmtBytes(v), axisFmt: fmtBytesAxis, beginAtZero: false,
   series: [{ key: "disk_used", label: "Used", color: "--s1" }],
   headline: (st, src) => fmtPct(lastOf(src.disk_pct)),
   subFn: src => { const t = lastOf(src.disk_total); return isNum(t) ? `${config?.disk_path || ""} · ${fmtBytes(t)} total` : ""; },
@@ -686,11 +786,11 @@ card({ id: "disk", group: "system", title: "Disk usage", src: "system", fmt: v =
     if (s.slope > 0 && isNum(total)) extra = `full in ~${fmtDur((total - s.last) / s.slope * 3600)}`;
     return trendHtml(s, def, { extra });
   } });
-card({ id: "diskio", group: "system", title: "Disk I/O", src: "system", fmt: fmtRate, axisFmt: fmtBytesAxis,
+card({ id: "diskio", group: "disk", title: "Disk I/O", src: "system", fmt: fmtRate, axisFmt: fmtBytesAxis,
   series: [{ key: "disk_read_bps", label: "Read", color: "--s1" }, { key: "disk_write_bps", label: "Write", color: "--s2" }],
   headline: (st) => fmtRate((st[0]?.last || 0) + (st[1]?.last || 0)),
   trend: (st, def) => `<span>read avg ${fmtRate(st[0]?.avg)}</span><span>write avg ${fmtRate(st[1]?.avg)}</span><span>peak ${fmtRate(Math.max(st[0]?.max || 0, st[1]?.max || 0))}</span>` });
-card({ id: "uptime-sys", group: "system", title: "System uptime", sub: "Time since the machine last booted",
+card({ id: "uptime-sys", group: "health", title: "System uptime", sub: "Time since the machine last booted",
   src: "system", fmt: fmtUptime, axisFmt: v => fmtDur(v),
   series: [{ key: "uptime_sec", label: "Uptime", color: "--s1" }],
   subFn: src => { const b = lastOf(src.boot_time); return isNum(b) ? `booted ${new Date(b * 1000).toLocaleString()}` : ""; },
@@ -699,10 +799,83 @@ card({ id: "uptime-sys", group: "system", title: "System uptime", sub: "Time sin
     return `<span>${n === 0 ? "no reboots" : `<b>${n} reboot${n === 1 ? "" : "s"}</b>`} in range</span>` +
       (st[0] ? `<span>longest ${fmtUptime(st[0].max)}</span>` : "");
   } });
-card({ id: "net", group: "system", title: "Network (host)", src: "system", fmt: fmtRate, axisFmt: fmtBytesAxis,
+card({ id: "net", group: "net", title: "Network (host)", src: "system", fmt: fmtRate, axisFmt: fmtBytesAxis,
   series: [{ key: "net_recv_bps", label: "In", color: "--s1" }, { key: "net_sent_bps", label: "Out", color: "--s2" }],
   headline: (st) => fmtRate((st[0]?.last || 0) + (st[1]?.last || 0)),
   trend: (st) => `<span>in avg ${fmtRate(st[0]?.avg)}</span><span>out avg ${fmtRate(st[1]?.avg)}</span><span>peak ${fmtRate(Math.max(st[0]?.max || 0, st[1]?.max || 0))}</span>` });
+
+// ---- extended system metrics (USE)
+const fmtRateN = (unit) => v => isNum(v) ? (v >= 1000 ? fmtNum(v, 0) : v.toFixed(v < 10 ? 2 : 0)) + unit : "—";
+const fmtMs1 = v => isNum(v) ? (v < 10 ? v.toFixed(2) : v.toFixed(0)) + " ms" : "—";
+const intAxis = v => Number.isInteger(v) ? fmtNum(v, 0) : "";   // count charts: no 0.5 / 1.5 ticks
+const sumOf = arr => (arr || []).filter(isNum).reduce((a, b) => a + b, 0);
+card({ id: "cpu-util", group: "cpu", title: "CPU utilization", sub: "Where CPU time goes (iowait and steal are Linux only)",
+  src: "system", fmt: v => fmtPct(v), axisFmt: v => v + "%", yMax: 100,
+  series: [{ key: "cpu_user", label: "User", color: "--s1" }, { key: "cpu_system", label: "System", color: "--s2" },
+           { key: "cpu_iowait", label: "iowait", color: "--s3" }, { key: "cpu_steal", label: "Steal", color: "--s4" }] });
+card({ id: "load", group: "cpu", title: "Load per core", sub: "1-minute load ÷ cores; above 1.0 means work is queuing",
+  src: "system", fmt: v => isNum(v) ? v.toFixed(2) : "—", series: [{ key: "load_per_core", label: "Load / core", color: "--s1" }],
+  subFn: src => { const c = lastOf(src.cpu_cores), l5 = lastOf(src.load5), l15 = lastOf(src.load15);
+    return isNum(c) ? `${c} cores · 5m ${isNum(l5) ? (l5 / c).toFixed(2) : "—"} · 15m ${isNum(l15) ? (l15 / c).toFixed(2) : "—"} per core` : ""; } });
+card({ id: "runq", group: "cpu", title: "Run queue", sub: "Processes running or waiting for CPU, and blocked on I/O",
+  src: "system", fmt: v => isNum(v) ? v.toFixed(0) : "—",
+  series: [{ key: "procs_running", label: "Running", color: "--s1" }, { key: "procs_blocked", label: "Blocked", color: "--s2" }] });
+card({ id: "ctx", group: "cpu", title: "Context switches & interrupts", src: "system", fmt: fmtRateN(" /s"),
+  axisFmt: v => fmtNum(v), series: [{ key: "ctx_switches_ps", label: "Context switches", color: "--s1" },
+                                    { key: "interrupts_ps", label: "Interrupts", color: "--s2" }] });
+card({ id: "swap", group: "mem", title: "Swap used", src: "system", fmt: v => fmtBytes(v), axisFmt: fmtBytesAxis,
+  series: [{ key: "swap_used", label: "Swap used", color: "--s1" }],
+  subFn: src => { const p = lastOf(src.swap_pct); return isNum(p) ? `${fmtPct(p)} of swap` : ""; } });
+card({ id: "swapio", group: "mem", title: "Swap in / out", sub: "Sustained swap-in means memory pressure", src: "system",
+  fmt: fmtRate, axisFmt: fmtBytesAxis,
+  series: [{ key: "swap_in_bps", label: "In", color: "--s1" }, { key: "swap_out_bps", label: "Out", color: "--s2" }] });
+card({ id: "oom", group: "mem", title: "OOM kills", sub: "Processes killed by the kernel for lack of memory", src: "system",
+  fmt: v => isNum(v) ? fmtNum(v, 0) : "—", axisFmt: intAxis, stepped: true, series: [{ key: "oom_kills", label: "OOM kills", color: "--critical" }],
+  headline: (st, src) => `${fmtNum(sumOf(src.oom_kills))} <span style="font-size:12px;font-weight:400;color:var(--text-2)">in range</span>` });
+card({ id: "fsmax", group: "disk", title: "Fullest filesystem", sub: "Highest space and inode use across filesystems",
+  src: "system", fmt: v => fmtPct(v), axisFmt: v => v + "%", yMax: 100,
+  series: [{ key: "fs_max_pct", label: "Space", color: "--s1" }, { key: "inode_max_pct", label: "Inodes", color: "--s2" }] });
+card({ id: "iops", group: "disk", title: "IOPS", src: "system", fmt: fmtRateN(" /s"), axisFmt: v => fmtNum(v),
+  series: [{ key: "disk_read_iops", label: "Read", color: "--s1" }, { key: "disk_write_iops", label: "Write", color: "--s2" }] });
+card({ id: "await", group: "disk", title: "I/O latency (await)", sub: "Average time per disk request, queueing included",
+  src: "system", fmt: fmtMs1, series: [{ key: "disk_await_ms", label: "await", color: "--s1" }] });
+card({ id: "busy", group: "disk", title: "Disk busy", sub: "Busiest disk's share of time with I/O in flight (Linux)",
+  src: "system", fmt: v => fmtPct(v), axisFmt: v => v + "%", yMax: 100, series: [{ key: "disk_util_pct", label: "Busy", color: "--s1" }] });
+card({ id: "queue", group: "disk", title: "Queue depth", sub: "Average requests in flight across disks (Linux)",
+  src: "system", fmt: v => isNum(v) ? v.toFixed(2) : "—", series: [{ key: "disk_queue", label: "Queue", color: "--s1" }] });
+card({ id: "netutil", group: "net", title: "Link utilization", sub: "Busiest interface vs its link speed",
+  src: "system", fmt: v => fmtPct(v), axisFmt: v => v + "%", series: [{ key: "net_util_pct", label: "Utilization", color: "--s1" }] });
+card({ id: "neterr", group: "net", title: "Packet errors & drops", src: "system", fmt: fmtRateN(" /s"),
+  series: [{ key: "net_errors_ps", label: "Errors", color: "--critical" }, { key: "net_drops_ps", label: "Drops", color: "--s2" }] });
+card({ id: "retrans", group: "net", title: "TCP retransmits", sub: "Share of TCP segments sent again (Linux)", src: "system",
+  fmt: v => fmtPct(v, 2), axisFmt: v => v + "%", series: [{ key: "tcp_retrans_pct", label: "Retransmitted", color: "--s1" }] });
+card({ id: "tcp", group: "net", title: "TCP connections", sub: "Sockets by state (Linux)", src: "system",
+  fmt: v => isNum(v) ? fmtNum(v, 0) : "—",
+  series: [{ key: "tcp_established", label: "ESTABLISHED", color: "--s1" }, { key: "tcp_time_wait", label: "TIME_WAIT", color: "--s2" },
+           { key: "tcp_close_wait", label: "CLOSE_WAIT", color: "--s3" }] });
+card({ id: "dns", group: "net", title: "DNS resolution time", sub: "Lookup through the system resolver (cached answers are fast)",
+  src: "system", fmt: fmtMs1, series: [{ key: "dns_ms", label: "Lookup", color: "--s1" }],
+  subFn: src => { const ok = lastOf(src.dns_ok); return ok === 0 ? "✕ last lookup failed" : ""; } });
+card({ id: "procs", group: "health", title: "Processes", src: "system", fmt: v => isNum(v) ? fmtNum(v, 0) : "—",
+  series: [{ key: "proc_count", label: "Processes", color: "--s1" }],
+  trend: (st, def, src) => `<span>zombies ${fmtNum(lastOf(src.proc_zombies))}</span>` + (st[0] ? `<span>avg ${def.fmt(st[0].avg)}</span><span>max ${def.fmt(st[0].max)}</span>` : "") });
+card({ id: "fds", group: "health", title: "Open file handles", src: "system", fmt: v => isNum(v) ? fmtNum(v, 0) : "—",
+  series: [{ key: "fd_used", label: "In use", color: "--s1" }],
+  subFn: src => { const m = lastOf(src.fd_max), p = lastOf(src.fd_pct); return isNum(m) ? `${fmtPct(p)} of the ${fmtNum(m)} limit` : "system limit: unlimited"; } });
+card({ id: "clock", group: "health", title: "Clock offset", sub: "Difference from NTP time; validators need an accurate clock",
+  src: "system", fmt: v => isNum(v) ? (v >= 0 ? "+" : "") + fmtMs1(v) : "—", beginAtZero: false,
+  series: [{ key: "clock_offset_ms", label: "Offset", color: "--s1" }],
+  trend: (st, def) => trendHtml(st[0], { ...def, fmt: v => isNum(v) ? fmtMs1(v) : "—" }),
+  subFn: src => { const s = lastOf(src.ntp_synced); return s === 1 ? "✓ NTP synchronised" : s === 0 ? "✕ not NTP synchronised" : ""; } });
+card({ id: "temp", group: "health", title: "Hottest temperature", src: "system", fmt: v => isNum(v) ? v.toFixed(0) + " °C" : "—",
+  beginAtZero: false, series: [{ key: "temp_max_c", label: "Hottest sensor", color: "--s2" }] });
+card({ id: "logins", group: "security", title: "Failed logins", sub: "Failed SSH logins (from the journal, every 5 min)",
+  src: "system", fmt: v => isNum(v) ? fmtNum(v, 0) : "—", axisFmt: intAxis, stepped: true, series: [{ key: "failed_logins", label: "Failed logins", color: "--s2" }],
+  headline: (st, src) => `${fmtNum(sumOf(src.failed_logins))} <span style="font-size:12px;font-weight:400;color:var(--text-2)">in range</span>` });
+card({ id: "syslog", group: "security", title: "System log errors & warnings", sub: "All services, from the journal (every 5 min)",
+  src: "system", fmt: v => isNum(v) ? fmtNum(v, 0) : "—", axisFmt: intAxis, stepped: true,
+  series: [{ key: "sys_log_errors", label: "Errors", color: "--critical" }, { key: "sys_log_warnings", label: "Warnings", color: "--warning" }],
+  headline: (st, src) => `${fmtNum(sumOf(src.sys_log_errors))} <span style="font-size:12px;font-weight:400;color:var(--text-2)">errors in range</span>` });
 
 // Each bucket's value is the share of samples in it that were synced (0–100%).
 function syncRuns(ts, ys, bucket) {
@@ -1065,6 +1238,92 @@ document.getElementById("peerSearch").addEventListener("input", renderPeers);
 document.getElementById("peerValidatorsOnly").addEventListener("change", renderPeers);
 document.getElementById("peerShowGone").addEventListener("change", renderPeers);
 
+// ---------------------------------------------------------------- alerts, USE summaries, health tables, RED
+let healthData = null;
+const SEV = { critical: ["--critical", "✕"], warning: ["--warning", "⚠"], info: ["--s1", "ℹ"] };
+const STATUS = { pass: ["--good", "✓", "OK"], warn: ["--warning", "⚠", "Warning"], fail: ["--critical", "✕", "Failing"], na: ["--muted", "–", "N/A"] };
+const badge = st => { const [c, i, l] = STATUS[st] || STATUS.na; return `<span class="lvl"><i style="color:var(${c})">${i}</i>${l}</span>`; };
+const meter = pct => !isNum(pct) ? `<span class="muted">—</span>` :
+  `<span class="meter ${pct >= 90 ? "crit" : pct >= 80 ? "warn" : ""}"><i style="width:${Math.min(100, pct)}%"></i></span>${fmtPct(pct, 0)}`;
+
+function renderAlerts(alerts) {
+  const list = document.getElementById("alertList");
+  if (!alerts) return;
+  if (!alerts.length) { list.innerHTML = `<div class="alerts-ok"><span style="color:var(--good)">✓</span> No active alerts</div>`; return; }
+  const now = Date.now() / 1000;
+  list.innerHTML = alerts.map(a => {
+    const [c, icon] = SEV[a.severity] || SEV.info;
+    return `<div class="alert-row ${esc(a.severity)}"><span style="color:var(${c})">${icon}</span>
+      <div><span class="t">${esc(a.title)}</span> <span class="d">${esc(a.detail)}</span></div>
+      <span class="since" title="${esc(new Date(a.since * 1000).toLocaleString())}">for ${fmtDur(Math.max(0, now - a.since))}</span></div>`;
+  }).join("");
+}
+
+function useLine(id, u, sat, err) {
+  const el = document.getElementById(id); if (!el) return;
+  el.innerHTML = `<b title="Utilization">U</b>${u}<span class="sep">·</span><b title="Saturation">S</b>${sat}<span class="sep">·</span><b title="Errors">E</b>${err}`;
+}
+
+function renderHealth() {
+  const s = lastData?.system || {}, h = healthData || {}, ck = h.checks || {};
+  renderAlerts(h.alerts);
+  const L = k => lastOf(s[k]);
+  // USE summaries per resource
+  useLine("use-cpu", `${fmtPct(L("cpu_pct"))} busy` + (isNum(L("cpu_steal")) ? `, steal ${fmtPct(L("cpu_steal"))}` : ""),
+    `load ${isNum(L("load_per_core")) ? L("load_per_core").toFixed(2) : "—"}/core` + (isNum(L("procs_running")) ? `, run queue ${L("procs_running")}` : ""),
+    "—");
+  useLine("use-mem", `${fmtPct(L("mem_pct"))} used, ${fmtBytes(L("mem_available"))} available`,
+    `swap ${fmtPct(L("swap_pct"))}, swap-in ${fmtRate(L("swap_in_bps"))}`,
+    `${fmtNum(sumOf(s.oom_kills))} OOM kills in range`);
+  const smart = ck.smart;
+  useLine("use-disk", `fullest fs ${fmtPct(L("fs_max_pct"), 0)}` + (isNum(L("disk_util_pct")) ? `, busiest disk ${fmtPct(L("disk_util_pct"), 0)}` : ""),
+    `await ${fmtMs1(L("disk_await_ms"))}` + (isNum(L("disk_queue")) ? `, queue ${L("disk_queue").toFixed(2)}` : ""),
+    smart ? `SMART ${STATUS[smart.status]?.[2] || "N/A"}` : "SMART —");
+  useLine("use-net", isNum(L("net_util_pct")) ? `${fmtPct(L("net_util_pct"))} of link` : `${fmtRate((L("net_recv_bps") || 0) + (L("net_sent_bps") || 0))}`,
+    isNum(L("tcp_retrans_pct")) ? `retransmits ${fmtPct(L("tcp_retrans_pct"), 2)}` : "retransmits —",
+    `${isNum(L("net_errors_ps")) ? ((L("net_errors_ps") || 0) + (L("net_drops_ps") || 0)).toFixed(1) : "—"} errors+drops/s`);
+  // filesystems
+  const fs = h.filesystems || [];
+  document.querySelector("#fsTable tbody").innerHTML = fs.length ? fs.map(f => `<tr>
+      <td><span class="mono">${esc(f.mount)}</span><br><span class="muted mono">${esc(f.device)}</span></td>
+      <td>${esc(f.fstype)}</td><td class="num">${fmtBytes(f.used)}</td><td class="num">${fmtBytes(f.total)}</td>
+      <td>${meter(f.pct)}</td><td>${meter(f.inode_pct)}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="muted">No filesystem data yet.</td></tr>`;
+  // health checks table
+  const rows = [], row = (name, st, value, detail) => rows.push(`<tr><td>${esc(name)}</td><td>${badge(st)}</td><td>${value}</td><td class="detail">${esc(detail || "")}</td></tr>`);
+  if (ck.last_boot) row("Last reboot", ck.last_boot.status, isNum(L("uptime_sec")) ? `up ${fmtUptime(L("uptime_sec"))}` : "—", ck.last_boot.detail);
+  if (ck.clock) row("Clock (NTP)", ck.clock.status, isNum(ck.clock.offset_ms) ? `${ck.clock.offset_ms >= 0 ? "+" : ""}${fmtMs1(ck.clock.offset_ms)}` : "—", ck.clock.detail);
+  if (ck.dns) row("DNS", ck.dns.status, fmtMs1(ck.dns.ms), ck.dns.detail);
+  if (ck.smart) {
+    if ((ck.smart.drives || []).length) for (const d of ck.smart.drives)
+      row(`SMART ${d.device}`, d.passed === true ? "pass" : d.passed === false ? "fail" : "na",
+          (isNum(d.temperature) ? `${d.temperature} °C` : "") + (isNum(d.percentage_used) ? ` · ${d.percentage_used}% worn` : "") || "—",
+          `${d.model || ""} ${d.detail || ""}`);
+    else row("SMART", ck.smart.status, "—", ck.smart.detail);
+  }
+  const temps = [...(h.temperatures || [])].sort((a, b) => b.current - a.current).slice(0, 4);
+  for (const t of temps) row(`Temperature: ${t.label}`, isNum(t.critical) && t.current >= t.critical ? "fail" : (isNum(t.high) && t.current >= t.high) || t.current > 85 ? "warn" : "pass",
+    `${t.current.toFixed(0)} °C`, `${t.chip}` + (isNum(t.high) ? ` · high ${t.high} °C` : "") + (isNum(t.critical) ? ` · critical ${t.critical} °C` : ""));
+  if (!temps.length) row("Temperatures", "na", "—", "No temperature sensors readable (Linux hwmon).");
+  for (const f of (h.fans || []).slice(0, 4)) row(`Fan: ${f.label}`, f.rpm > 0 ? "pass" : "warn", `${fmtNum(f.rpm)} RPM`, f.chip);
+  if (ck.ipmi) row("Power supplies & fans (IPMI)", ck.ipmi.status, "—", ck.ipmi.detail);
+  if (ck.patches) row("Security updates", ck.patches.status, isNum(ck.patches.security) ? String(ck.patches.security) : "—", ck.patches.detail);
+  for (const c of (ck.tls?.certs || [])) row(`TLS ${c.host}`, c.status, isNum(c.days_left) ? `${c.days_left.toFixed(0)} days` : "—", c.detail);
+  if (ck.tls && !(ck.tls.certs || []).length) row("TLS certificates", "na", "—", ck.tls.detail);
+  if (ck.logs) row("Journal (logins, log rates)", ck.logs.status, "—", ck.logs.detail);
+  document.querySelector("#healthTable tbody").innerHTML = rows.join("") || `<tr><td colspan="4" class="muted">${config?.collect_health === false ? "Health checks are turned off (Settings → Data collection)." : "Running checks…"}</td></tr>`;
+  // RED for the neard service
+  const n = lastData?.near || {}, LN = k => lastOf(n[k]);
+  const pcts = ["blocks_pct", "chunks_pct", "endorsements_pct"].map(LN).filter(isNum);
+  const missed = pcts.length ? 100 - Math.min(...pcts) : null;
+  const okAvg = (n.ok || []).filter(isNum); const rpcErr = okAvg.length ? (1 - okAvg.reduce((a, b) => a + b, 0) / okAvg.length) * 100 : null;
+  document.getElementById("redTiles").innerHTML = [
+    tile("Rate", isNum(LN("blocks_per_sec")) ? LN("blocks_per_sec").toFixed(2) + " blocks/s" : "—", `${fmtNum(LN("peers"))} peers`),
+    tile("Errors", isNum(missed) ? fmtPct(missed, 2) + " missed" : "—", `RPC errors ${isNum(rpcErr) ? fmtPct(rpcErr, 1) : "—"} in range`),
+    tile("Duration", isNum(LN("block_lag_sec")) ? "lag " + fmtDur(LN("block_lag_sec")) : "—", `RPC ${isNum(LN("rpc_latency_ms")) ? LN("rpc_latency_ms").toFixed(0) + " ms" : "—"}`),
+  ].join("");
+}
+
 // ---------------------------------------------------------------- host checks (run once at service start)
 const CHECK_BADGE = {
   pass: ["--good", "✓", "Pass"], warn: ["--warning", "⚠", "Warning"],
@@ -1233,13 +1492,14 @@ async function getJSON(url) {
 // Polling. Each kind of data is fetched only as often as it can change, only for sections that
 // are open and collecting, and not at all while the tab is hidden. A cheap 1-second tick decides
 // what's due; it makes no request unless something is.
-const POLL_EVERY = { peers: 30, shard: 60, logs: 15 };      // seconds
-const lastFetch = { core: 0, peers: 0, shard: 0, logs: 0 };  // core = charts + header (/api/metrics, /api/latest)
+const POLL_EVERY = { peers: 30, shard: 60, logs: 15, health: 30 };      // seconds
+const lastFetch = { core: 0, peers: 0, shard: 0, logs: 0, health: 0 };  // core = charts + header (/api/metrics, /api/latest)
 const collectionInterval = () => config?.fast_mode ? 1 : (config?.interval_seconds || 60);
 // When the charts and header are next fetched. In normal mode that's just after the server's next
 // sample is due, so new data shows up within a couple of seconds without extra requests; when chart
 // buckets are longer than the collection interval (e.g. 1s mode on the 24h view), it's the bucket cadence.
 function nextCoreAt() {
+  if (!lastFetch.core) return 0;   // invalidated (range change, tab shown again, settings saved): fetch now
   const every = coreEvery(), iv = collectionInterval(), t = latest?.time;
   if (every <= iv && isNum(t)) {
     const next = t + iv + 2;                  // just after the next sample
@@ -1266,6 +1526,7 @@ function coreEvery() {
   return Math.min(60, Math.max(1, iv, lastData?.bucket || 0));
 }
 const sectionOpen = key => !collapsed.includes(key);
+const CHART_SECTION = { cpu: "system", mem: "system", disk: "system", net: "system", health: "health", security: "health" };
 function wanted(group) {
   if (group === "peers") return config?.collect_peers !== false && (sectionOpen("peers") || sectionOpen("node"));
   if (group === "shard") return config?.collect_validator !== false && sectionOpen("shard");
@@ -1290,6 +1551,7 @@ async function refresh() {
     jobs.latest = getJSON("/api/latest");
   }
   if (due("peers")) jobs.peers = getJSON(`/api/peers?range=${rangeSeconds()}`);
+  if (due("health")) jobs.health = getJSON("/api/health");   // always: the alerts panel is always shown
   if (due("shard")) {
     const endorsers = document.getElementById("shardEndorsers").checked ? 1 : 0;
     jobs.shard = getJSON(`/api/shard?range=${rangeSeconds()}&endorsers=${endorsers}`);
@@ -1307,12 +1569,14 @@ async function refresh() {
     if (jobs.peers) { peers = results.peers; lastFetch.peers = t; }
     if (jobs.shard) { shard = results.shard; lastFetch.shard = t; }
     if (jobs.logs) lastFetch.logs = t;
+    if (jobs.health) { healthData = results.health; lastFetch.health = t; }
     if (jobs.metrics) {
       renderCharts(lastData);
       renderHeader();
       renderChecks(latest.host_checks);
     }
     if (jobs.peers) renderPeers();
+    if (jobs.health || jobs.metrics) renderHealth();
     if (jobs.shard) renderShard();
     if (jobs.logs && !document.querySelector("#logTable .msg.open")) renderLogs();
   } catch (e) {
@@ -1350,7 +1614,7 @@ async function saveConfig(patch) {
   applySections();
   applyReadOnly();
   schedule();
-  setTimeout(() => invalidate(["core", "peers", "shard", "logs"]), 1500);
+  setTimeout(() => invalidate(["core", "peers", "shard", "logs", "health"]), 1500);
 }
 
 // ---------------------------------------------------------------- read-only mode
@@ -1384,7 +1648,7 @@ document.getElementById("ranges").addEventListener("click", e => {
   const b = e.target.closest("button"); if (!b) return;
   range = b.dataset.r === "all" ? "all" : +b.dataset.r;
   try { localStorage.setItem("nvs-range", String(range)); } catch {}
-  markRange(); invalidate(["core", "peers", "shard", "logs"]);
+  markRange(); invalidate(["core", "peers", "shard", "logs", "health"]);
 });
 document.getElementById("fast").addEventListener("change", async e => {
   try { await saveConfig({ fast_mode: e.target.checked }); }
@@ -1424,7 +1688,7 @@ document.getElementById("saveSettings").addEventListener("click", async e => {
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", themeCharts);
 
 // ---------------------------------------------------------------- collapsible sections
-const SECTION_FLAG = { system: "collect_system", node: "collect_node", validator: "collect_validator",
+const SECTION_FLAG = { system: "collect_system", health: "collect_health", node: "collect_node", validator: "collect_validator",
                        shard: "collect_validator", peers: "collect_peers" };
 let collapsed = [];
 try { collapsed = JSON.parse(localStorage.getItem("nvs-collapsed")) || []; } catch {}

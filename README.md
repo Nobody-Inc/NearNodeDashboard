@@ -144,6 +144,44 @@ Settings are stored in `config.json` (created on first run). You can change them
 | NEAR node (`/status`, `/network_info`) | block height, blocks/sec, block lag (time since the node's latest block), sync state, active peers, P2P traffic, RPC latency, version and protocol |
 | Validator (`validators` JSON-RPC) | status (active, joining, proposal pending, not in set, kicked out with reason), stake, rank, seat price, blocks/chunks/endorsements produced vs expected this epoch, epoch progress and blocks remaining |
 
+Every chart marks the start of each new epoch in the selected range with a dashed vertical line labelled with the epoch number, so you can see whether a change lines up with an epoch boundary.
+
+## Host health: USE, RED and alerts
+
+The **System** section is organised by the USE method (Utilization, Saturation, Errors), with a one-line U · S · E summary per resource:
+
+| Resource | Utilization | Saturation | Errors |
+|---|---|---|---|
+| CPU | user / system / iowait / steal % | load per core, run queue, context switches | — |
+| Memory | used vs available | swap use, swap-in/out rate | OOM kills |
+| Disk | space and inodes per filesystem, busy % | I/O latency (await), queue depth, IOPS | SMART health |
+| Network | bandwidth vs link speed | TCP retransmits, connection states (ESTABLISHED, TIME_WAIT…) | packet errors and drops |
+
+The **Health & security** section covers uptime and unexpected reboots, processes and zombies, open file handles, clock drift (NTP), temperatures, fans and power supplies, DNS resolution time, failed SSH logins, system log error/warning rates, TLS certificate expiry and pending security updates.
+
+The **NEAR node** section starts with RED tiles for neard: **Rate** (blocks/s), **Errors** (missed blocks/chunks/endorsements, RPC failures) and **Duration** (block lag, RPC latency).
+
+**Alerts** (top of the page, and as `near_node_alert` in the exporter) fire on symptoms you'd notice, using sustained windows so a single spike doesn't trigger them:
+- the node unreachable, syncing or falling behind;
+- missed blocks or chunks, or not in the next epoch;
+- slow RPC or very few peers;
+- neard logging errors;
+- a filesystem 85%/90% full (space or inodes);
+- high disk latency, OOM kills, swapping, almost no memory left;
+- high TCP retransmits or packet errors;
+- high CPU steal or iowait, or CPU saturated for 10 minutes;
+- file handles running out, hot hardware, a failing drive, PSU or fan;
+- the clock not NTP-synced or drifting;
+- DNS failing, TLS certificates expiring;
+- an unexpected last reboot;
+- many failed logins;
+- pending security updates (info).
+
+Cheap metrics are sampled with every collection; slower checks run on their own schedule (DNS every minute; clock, logins, log rates and IPMI every 5 minutes; SMART, updates and TLS every 6 hours), so 1s mode doesn't hammer them. Most of these are Linux-only and show "—" elsewhere. Optional extras:
+- **SMART:** `sudo apt install smartmontools`. Reading drives needs root, so either run as root or give the service user passwordless sudo for `smartctl` and turn on `health_checks_sudo`.
+- **Power supplies and fans:** `ipmitool` on servers with a BMC (same root/sudo note).
+- **Unexpected-reboot detection:** a persistent journal (`sudo mkdir -p /var/log/journal`).
+
 ## Configuration (`config.json`)
 
 | Key | Default | Meaning |
@@ -165,6 +203,10 @@ Settings are stored in `config.json` (created on first run). You can change them
 | `p2p_port` | `24567` | neard's P2P port (`network.addr` in `~/.near/config.json`), checked for inbound access at startup |
 | `firewall_check_sudo` | `false` | Read firewall rules with `sudo -n` when not root. Only enable it if the service user has passwordless sudo for `ufw`/`iptables`/`nft`/`firewall-cmd`; otherwise each attempt is logged as a failed sudo authentication |
 | `read_only` | `false` | Lock the settings: when `true`, nothing can be changed from the web page (the Settings dialog becomes view-only and 1s mode is locked), and the page shows a warning. It can only be set by editing `config.json` on the server, and takes effect when the dashboard restarts |
+| `collect_health` | `true` | Run the slower health and security checks (DNS, clock, failed logins, system log rates, SMART, updates, TLS, IPMI) |
+| `dns_check_host` | `near.org` | Hostname resolved every minute to measure DNS time |
+| `tls_check_hosts` | *(blank)* | Extra HTTPS endpoints (`host[:port]`, comma-separated) whose certificate expiry is checked; HTTPS RPC URLs are always checked |
+| `health_checks_sudo` | `false` | Use `sudo -n` for SMART and IPMI checks. Only enable with passwordless sudo for `smartctl`/`ipmitool`; otherwise each attempt is logged as a failed sudo login |
 | `ping_enabled` | `true` | Ping every active peer once per round |
 | `ping_method` | `icmp` | `icmp` uses the system `ping` command. `tcp` times a TCP connection to the peer's NEAR port (24567), which works when a peer blocks ICMP |
 | `ping_interval_seconds` | `60` | Seconds between ping rounds. 1s mode doesn't change this |

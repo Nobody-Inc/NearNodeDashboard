@@ -58,12 +58,14 @@ def build_snapshot(base):
     """One consistent snapshot from the dashboard's API (all reads hit its response cache)."""
     cfg = fetch(base, "/api/config")
     latest = fetch(base, "/api/latest")
-    metrics = fetch(base, "/api/metrics?range=900&points=15")
+    metrics = fetch(base, "/api/metrics?range=3600&points=60")   # last values + 1-hour sums
+    health = fetch(base, "/api/health")
     peers = fetch(base, "/api/peers?range=3600")
     logs = fetch(base, "/api/logs?range=3600")
     shard = fetch(base, "/api/shard?range=3600")
     sysm, near, ping = metrics.get("system", {}), metrics.get("near", {}), metrics.get("ping", {})
     S = lambda k: last_value(sysm, k)  # noqa: E731
+    S_sum = lambda k: sum(v for v in (sysm.get(k) or []) if num(v) is not None)  # noqa: E731
     N = lambda k: last_value(near, k)  # noqa: E731
 
     account = latest.get("validator_account_id") or None
@@ -88,7 +90,38 @@ def build_snapshot(base):
             "network_receive_bytes_per_second": S("net_recv_bps"), "network_transmit_bytes_per_second": S("net_sent_bps"),
             "neard_cpu_ratio": pct(S("proc_cpu_pct")), "neard_resident_bytes": S("proc_rss"),
             "uptime_seconds": S("uptime_sec"), "boot_time_seconds": S("boot_time"),
+            # USE extras
+            "cpu_user_ratio": pct(S("cpu_user")), "cpu_system_ratio": pct(S("cpu_system")),
+            "cpu_iowait_ratio": pct(S("cpu_iowait")), "cpu_steal_ratio": pct(S("cpu_steal")), "cpu_cores": S("cpu_cores"),
+            "load_per_core": S("load_per_core"), "load5": S("load5"), "load15": S("load15"),
+            "procs_running": S("procs_running"), "procs_blocked": S("procs_blocked"),
+            "context_switches_per_second": S("ctx_switches_ps"), "interrupts_per_second": S("interrupts_ps"),
+            "memory_available_bytes": S("mem_available"), "swap_used_bytes": S("swap_used"),
+            "swap_in_bytes_per_second": S("swap_in_bps"), "swap_out_bytes_per_second": S("swap_out_bps"),
+            "oom_kills_1h": S_sum("oom_kills"),
+            "disk_read_iops": S("disk_read_iops"), "disk_write_iops": S("disk_write_iops"),
+            "disk_await_seconds": None if S("disk_await_ms") is None else S("disk_await_ms") / 1000,
+            "disk_busy_ratio": pct(S("disk_util_pct")), "disk_queue_depth": S("disk_queue"),
+            "filesystem_max_ratio": pct(S("fs_max_pct")), "inode_max_ratio": pct(S("inode_max_pct")),
+            "network_link_ratio": pct(S("net_util_pct")), "network_errors_per_second": S("net_errors_ps"),
+            "network_drops_per_second": S("net_drops_ps"), "tcp_retransmit_ratio": pct(S("tcp_retrans_pct")),
+            "tcp_established": S("tcp_established"), "tcp_time_wait": S("tcp_time_wait"),
+            "tcp_close_wait": S("tcp_close_wait"), "tcp_connections": S("tcp_total"),
+            "dns_lookup_seconds": None if S("dns_ms") is None else S("dns_ms") / 1000, "dns_ok": S("dns_ok"),
+            "processes": S("proc_count"), "zombie_processes": S("proc_zombies"),
+            "file_handles_used": S("fd_used"), "file_handles_ratio": pct(S("fd_pct")),
+            "clock_offset_seconds": None if S("clock_offset_ms") is None else S("clock_offset_ms") / 1000,
+            "ntp_synced": S("ntp_synced"), "temperature_max_celsius": S("temp_max_c"),
+            "failed_logins_1h": S_sum("failed_logins"), "log_errors_1h": S_sum("sys_log_errors"),
+            "log_warnings_1h": S_sum("sys_log_warnings"),
         },
+        "filesystems": [{"mount": f.get("mount"), "fstype": f.get("fstype"), "used_bytes": f.get("used"),
+                         "size_bytes": f.get("total"), "used_ratio": pct(f.get("pct")),
+                         "inode_ratio": pct(f.get("inode_pct"))} for f in health.get("filesystems", [])],
+        "alerts": [{k: a.get(k) for k in ("id", "severity", "title", "detail", "since")} for a in health.get("alerts", [])],
+        "checks": {k: {kk: vv for kk, vv in v.items() if kk in ("status", "detail", "offset_ms", "synced", "ms", "security",
+                                                                 "total", "reboot_required", "unexpected", "certs", "drives")}
+                   for k, v in (health.get("checks") or {}).items()},
         "node_status": {
             "rpc_up": 0 if latest.get("error") else 1, "rpc_error": latest.get("error"),
             "synced": N("synced"), "syncing": 1 if latest.get("syncing") else 0,
@@ -211,6 +244,58 @@ def prometheus(snap, meta, per_peer=False):
             labels = {"peer": peer.get("name") or "", "ip": peer.get("ip") or ""}
             g("peer_ping_seconds", peer.get("ping_avg_seconds"), "Average round-trip time to a peer (last hour)", labels)
             g("peer_ping_loss_ratio", peer.get("ping_loss_ratio"), "Share of pings to a peer with no reply (0-1)", labels)
+    # extended system metrics (USE)
+    extra_help = {
+        "cpu_user_ratio": "CPU time in user space (0-1)", "cpu_system_ratio": "CPU time in the kernel (0-1)",
+        "cpu_iowait_ratio": "CPU time waiting on I/O (0-1)", "cpu_steal_ratio": "CPU time taken by the hypervisor (0-1)",
+        "cpu_cores": "Logical CPU cores", "load_per_core": "1-minute load average per core", "load5": "5-minute load average",
+        "load15": "15-minute load average", "procs_running": "Runnable processes (run queue)",
+        "procs_blocked": "Processes blocked on I/O", "context_switches_per_second": "Context switches per second",
+        "interrupts_per_second": "Interrupts per second", "memory_available_bytes": "Memory available for new work",
+        "swap_used_bytes": "Swap in use", "swap_in_bytes_per_second": "Swap-in rate", "swap_out_bytes_per_second": "Swap-out rate",
+        "oom_kills_1h": "Processes killed by the OOM killer in the last hour", "disk_read_iops": "Disk reads per second",
+        "disk_write_iops": "Disk writes per second", "disk_await_seconds": "Average disk request latency",
+        "disk_busy_ratio": "Busiest disk's busy time (0-1)", "disk_queue_depth": "Average disk requests in flight",
+        "filesystem_max_ratio": "Fullest filesystem's space use (0-1)", "inode_max_ratio": "Highest inode use across filesystems (0-1)",
+        "network_link_ratio": "Busiest interface's use of its link speed (0-1)", "network_errors_per_second": "Packet errors per second",
+        "network_drops_per_second": "Packets dropped per second", "tcp_retransmit_ratio": "Share of TCP segments retransmitted (0-1)",
+        "tcp_established": "TCP sockets in ESTABLISHED", "tcp_time_wait": "TCP sockets in TIME_WAIT",
+        "tcp_close_wait": "TCP sockets in CLOSE_WAIT", "tcp_connections": "TCP sockets (excluding listeners)",
+        "dns_lookup_seconds": "DNS resolution time", "dns_ok": "1 if the last DNS lookup succeeded",
+        "processes": "Processes", "zombie_processes": "Zombie processes", "file_handles_used": "Open file handles (system)",
+        "file_handles_ratio": "Open file handles vs the system limit (0-1)", "clock_offset_seconds": "System clock offset from NTP",
+        "ntp_synced": "1 if the clock is NTP-synchronised", "temperature_max_celsius": "Hottest hardware sensor",
+        "failed_logins_1h": "Failed SSH logins in the last hour", "log_errors_1h": "System journal errors in the last hour",
+        "log_warnings_1h": "System journal warnings in the last hour"}
+    for key, help_ in extra_help.items():
+        g("system_" + key, s.get(key), help_)
+    for f in snap.get("filesystems", []):
+        lab = {"mount": f.get("mount") or "", "fstype": f.get("fstype") or ""}
+        g("filesystem_used_bytes", f.get("used_bytes"), "Space used per filesystem", lab)
+        g("filesystem_size_bytes", f.get("size_bytes"), "Size per filesystem", lab)
+        g("filesystem_used_ratio", f.get("used_ratio"), "Space use per filesystem (0-1)", lab)
+        g("filesystem_inode_ratio", f.get("inode_ratio"), "Inode use per filesystem (0-1)", lab)
+    ck = snap.get("checks", {})
+    for cert in (ck.get("tls") or {}).get("certs") or []:
+        g("tls_cert_days_left", cert.get("days_left"), "Days until a TLS certificate expires", {"host": cert.get("host") or ""})
+    pt = ck.get("patches") or {}
+    g("security_updates_pending", pt.get("security"), "Security updates waiting to be installed")
+    g("updates_pending", pt.get("total"), "Package updates waiting to be installed")
+    if pt.get("reboot_required") is not None:
+        g("reboot_required", int(bool(pt.get("reboot_required"))), "1 if a reboot is needed to finish updates")
+    drives = (ck.get("smart") or {}).get("drives") or []
+    for d in drives:
+        if d.get("passed") is not None:
+            g("smart_healthy", int(bool(d["passed"])), "1 if a drive's SMART self-assessment passed", {"device": d.get("device") or ""})
+    if (ck.get("last_boot") or {}).get("unexpected") is not None:
+        g("last_reboot_unexpected", int(bool(ck["last_boot"]["unexpected"])), "1 if the previous boot had no clean shutdown")
+    # alerts (symptom-based, evaluated by the dashboard)
+    alerts = snap.get("alerts", [])
+    for sev in ("critical", "warning", "info"):
+        g("alerts_active", sum(1 for a in alerts if a.get("severity") == sev), "Active alerts by severity", {"severity": sev})
+    for a in alerts:
+        g("alert", 1, "An active alert (1 while it lasts)", {"alert": a.get("id") or "", "severity": a.get("severity") or "",
+                                                             "title": a.get("title") or ""})
     # logs, host checks
     g("log_warnings_1h", lg.get("warnings"), "neard WARN lines in the last hour")
     g("log_errors_1h", lg.get("errors"), "neard ERROR lines in the last hour")

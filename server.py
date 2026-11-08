@@ -30,6 +30,8 @@ from collections import OrderedDict
 
 import psutil
 
+import health
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_VERSION = "1.0.0"
 REPO_URL = "https://github.com/Nobody-Inc/NearNodeDashboard"
@@ -62,6 +64,15 @@ DEFAULT_CONFIG = {
     "collect_validator": True,  # also feeds the "validators on your shard" table
     "collect_peers": True,      # peer tracking, churn and pings
     "collect_logs": True,       # WARN/ERROR lines from the neard service log
+    "collect_health": True,     # slower health/security checks: DNS, clock, logins, log rates, SMART, patches, TLS
+    # Hostname whose DNS resolution time is measured (every minute).
+    "dns_check_host": "near.org",
+    # Extra HTTPS endpoints whose certificate expiry is checked, comma-separated host[:port].
+    # HTTPS RPC URLs are always checked.
+    "tls_check_hosts": "",
+    # Use `sudo -n` for SMART (smartctl) and IPMI (ipmitool) checks. Only enable it with passwordless
+    # sudo for those commands; otherwise every attempt is logged as a failed sudo login.
+    "health_checks_sudo": False,
     # Lock the settings: when true, nothing can be changed from the web page (Settings dialog,
     # 1s-mode toggle). Can only be set by editing this file on the server; takes effect on restart.
     "read_only": False,
@@ -95,12 +106,21 @@ SYSTEM_COLS = [
     "disk_pct", "disk_used", "disk_total", "disk_read_bps", "disk_write_bps",
     "net_sent_bps", "net_recv_bps", "proc_cpu_pct", "proc_rss",
     "uptime_sec", "boot_time",
+    # extended USE metrics (health.ExtendedStats) and slow checks (health.HealthMonitor)
+    "cpu_user", "cpu_system", "cpu_iowait", "cpu_steal", "cpu_cores", "load5", "load15", "load_per_core",
+    "procs_running", "procs_blocked", "ctx_switches_ps", "interrupts_ps",
+    "mem_available", "swap_used", "swap_in_bps", "swap_out_bps", "oom_kills",
+    "disk_read_iops", "disk_write_iops", "disk_await_ms", "disk_util_pct", "disk_queue", "fs_max_pct", "inode_max_pct",
+    "net_util_pct", "net_errors_ps", "net_drops_ps", "tcp_retrans_ps", "tcp_retrans_pct",
+    "tcp_established", "tcp_time_wait", "tcp_close_wait", "tcp_total", "dns_ms", "dns_ok",
+    "proc_count", "proc_zombies", "fd_used", "fd_max", "fd_pct", "clock_offset_ms", "ntp_synced", "temp_max_c",
+    "failed_logins", "sys_log_errors", "sys_log_warnings",
 ]
 
 NEAR_COLS = [
     "ok", "synced", "rpc_latency_ms", "block_height", "blocks_per_sec", "block_lag_sec", "syncing",
     "peers", "max_peers", "peer_joins", "peer_leaves", "near_sent_bps", "near_recv_bps",
-    "protocol_version", "latest_protocol_version",
+    "protocol_version", "latest_protocol_version", "epoch_start_height",
     "epoch_height", "epoch_progress_pct", "num_validators", "seat_price", "stake",
     "blocks_produced", "blocks_expected", "chunks_produced", "chunks_expected",
     "endorsements_produced", "endorsements_expected",
@@ -109,7 +129,8 @@ NEAR_COLS = [
 
 # Which section each NEAR column belongs to (for the per-section collection switches).
 NODE_COLS = {"ok", "synced", "rpc_latency_ms", "block_height", "blocks_per_sec", "block_lag_sec", "syncing",
-             "peers", "max_peers", "near_sent_bps", "near_recv_bps", "protocol_version", "latest_protocol_version"}
+             "peers", "max_peers", "near_sent_bps", "near_recv_bps", "protocol_version", "latest_protocol_version",
+             "epoch_start_height"}
 PEER_COLS = {"peer_joins", "peer_leaves"}
 VALIDATOR_COLS = set(NEAR_COLS) - NODE_COLS - PEER_COLS
 
@@ -117,9 +138,11 @@ VALIDATOR_COLS = set(NEAR_COLS) - NODE_COLS - PEER_COLS
 MAX_AGG = {"block_height", "epoch_height", "disk_total", "mem_total", "max_peers",
            "blocks_produced", "blocks_expected", "chunks_produced", "chunks_expected",
            "endorsements_produced", "endorsements_expected", "epoch_progress_pct",
-           "protocol_version", "latest_protocol_version", "uptime_sec", "boot_time"}
-MIN_AGG = {"ok"}
-SUM_AGG = {"peer_joins", "peer_leaves"}  # event counts: a bucket's value is the total within it
+           "protocol_version", "latest_protocol_version", "epoch_start_height", "uptime_sec", "boot_time",
+           "cpu_cores", "fd_max", "fs_max_pct", "inode_max_pct", "temp_max_c", "proc_zombies"}
+MIN_AGG = {"ok", "dns_ok", "ntp_synced"}
+# event counts: a bucket's value is the total within it
+SUM_AGG = {"peer_joins", "peer_leaves", "oom_kills", "failed_logins", "sys_log_errors", "sys_log_warnings"}
 
 # A node counts as "synced" when RPC answers, it isn't syncing, and its head block is this fresh.
 SYNC_LAG_THRESHOLD_SEC = 30
@@ -246,8 +269,20 @@ def validate_config_patch(patch, from_file=False):
             value = str(value).strip().lower()
             if value not in ("icmp", "tcp"):
                 raise ValueError("ping_method must be 'icmp' or 'tcp'")
-        elif key in ("ping_enabled", "firewall_check_sudo") or key.startswith("collect_"):
+        elif key in ("ping_enabled", "firewall_check_sudo", "health_checks_sudo") or key.startswith("collect_"):
             value = to_bool(value)
+        elif key == "dns_check_host":
+            value = str(value).strip().lower()
+            if not re.match(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$", value):
+                raise ValueError("dns_check_host must be a hostname like near.org")
+        elif key == "tls_check_hosts":
+            items = [i.strip().lower() for i in str(value).split(",") if i.strip()]
+            for i in items:
+                if not re.match(r"^[a-z0-9.-]+(:\d{1,5})?$", i):
+                    raise ValueError(f"tls_check_hosts: {i!r} isn't host or host:port")
+            if len(items) > 20:
+                raise ValueError("tls_check_hosts: at most 20 hosts")
+            value = ",".join(items)
         elif key == "log_source":
             value = str(value).strip().lower()
             if value not in ("journald", "file"):
@@ -443,6 +478,22 @@ def version_changes(conn, since):
     return [dict(zip(cols, r)) | {"before_range": i < len(before)} for i, r in enumerate(before + inside)]
 
 
+def epoch_marks(conn, since):
+    """When each new epoch started within the range: the first sample that saw a new epoch start
+    height (from /status, collected with the NEAR node section), falling back to the validator data's
+    epoch number for older history. The earliest epoch in the range started before it (or before
+    collection began), so it isn't a boundary."""
+    rows = []
+    for col in ("epoch_start_height", "epoch_height"):
+        rows = conn.execute(f"SELECT {col}, MIN(ts), MAX(epoch_height) FROM near WHERE ts >= ? AND {col} IS NOT NULL "
+                            f"GROUP BY {col} ORDER BY MIN(ts)", (since,)).fetchall()
+        if len(rows) > 1:
+            break
+    return [{"ts": ts, "epoch": int(ep) if isinstance(ep, (int, float)) else None,
+             "start_height": int(key) if col == "epoch_start_height" and isinstance(key, (int, float)) else None}
+            for key, ts, ep in rows[1:]]
+
+
 def db_query(conn, table, cols, since, bucket):
     aggs = []
     for c in cols:
@@ -468,6 +519,8 @@ class SystemCollector:
         self.prev_t = None
         self.proc = None
         self.first = True
+        self.ext = health.ExtendedStats()
+        self.monitor = None   # health.HealthMonitor, set by main()
 
     def _find_proc(self):
         name = self.config.get("process_name")
@@ -540,6 +593,13 @@ class SystemCollector:
                     row["proc_rss"] = proc.memory_info().rss
             except psutil.Error:
                 self.proc = None
+        try:
+            row.update({k: v for k, v in self.ext.sample(now).items() if v is not None})
+        except Exception as e:  # extended metrics are best-effort; never lose the basic sample
+            print(f"[system] extended stats error: {e}", flush=True)
+        if self.monitor is not None and self.config.get("collect_health"):
+            row.update({k: v for k, v in self.monitor.gauges.items() if v is not None})
+            row.update(self.monitor.pop_counts())
         return now, row
 
 
@@ -1592,6 +1652,7 @@ class NearCollector:
             node_validator_account_id=text(status.get("validator_account_id")),
         )
         row["protocol_version"] = latest["protocol_version"]
+        row["epoch_start_height"] = latest["epoch_start_height"]   # changes when a new epoch starts
         row["latest_protocol_version"] = latest["latest_protocol_version"]
         if on_node:
             try:
@@ -1952,14 +2013,184 @@ def run_loop(name, config, collector, table, cols, db_path, stop, prune=False, e
     conn.close()
 
 
+# --------------------------------------------------------------------------- alerts
+
+SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2}
+
+
+class AlertEngine:
+    """Symptom-based alerts, evaluated every 30 s. Rules look at sustained windows (e.g. a 5-minute
+    average) rather than single samples, so a brief spike doesn't page anyone, and they focus on what
+    an operator would notice: the node falling behind, missed blocks, errors, latency, running out of
+    space, failing hardware, expiring certificates."""
+
+    INTERVAL = 30
+
+    def __init__(self, app):
+        self.app = app
+        self.since = {}
+
+    @staticmethod
+    def _window(conn, table, cols, seconds, fn="AVG"):
+        row = conn.execute(f"SELECT {','.join(f'{fn}({c})' for c in cols)} FROM {table} WHERE ts >= ?",
+                           (time.time() - seconds,)).fetchone()
+        return {c: (v if isinstance(v, (int, float)) else None) for c, v in zip(cols, row or [None] * len(cols))}
+
+    @staticmethod
+    def _latest(conn, table, col):
+        r = conn.execute(f"SELECT {col} FROM {table} WHERE {col} IS NOT NULL ORDER BY ts DESC LIMIT 1").fetchone()
+        return r[0] if r and isinstance(r[0], (int, float)) else None
+
+    def evaluate(self, conn):
+        app, out = self.app, []
+        cfg, L = app.config.snapshot(), app.near.latest
+
+        def add(id_, severity, title, detail):
+            out.append({"id": id_, "severity": severity, "title": title, "detail": detail})
+
+        # ---- NEAR node (RED: errors and duration as the node's users see them)
+        if cfg["collect_node"]:
+            w2 = self._window(conn, "near", ["ok", "block_lag_sec"], 120)
+            w5 = self._window(conn, "near", ["rpc_latency_ms", "peers"], 300)
+            if L.get("error") and w2["ok"] is not None and w2["ok"] < 0.5:
+                add("rpc_down", "critical", "Node RPC is unreachable", f"{L['error']} (for over a minute)")
+            elif L.get("syncing"):
+                add("syncing", "critical", "Node is syncing", "The node isn't at the chain head, so it can't validate.")
+            elif w2["block_lag_sec"] is not None and w2["block_lag_sec"] > 30:
+                add("behind", "critical" if w2["block_lag_sec"] > 60 else "warning", "Node is falling behind",
+                    f"Latest block is {w2['block_lag_sec']:.0f} s old on average over 2 minutes.")
+            if w5["rpc_latency_ms"] is not None and w5["rpc_latency_ms"] > 1000:
+                add("rpc_slow", "warning", "Node RPC is slow", f"/status takes {w5['rpc_latency_ms']:.0f} ms (5-min average).")
+            if w5["peers"] is not None and w5["peers"] < 5:
+                add("few_peers", "critical" if w5["peers"] < 2 else "warning", "Very few peers",
+                    f"{w5['peers']:.0f} active peers (5-min average): the node may be isolated.")
+        # ---- validator duties
+        if cfg["collect_validator"] and L.get("validator_status"):
+            near = {k: self._latest(conn, "near", k) for k in ("blocks_pct", "chunks_pct", "endorsements_pct")}
+            low = {k.split("_")[0]: v for k, v in near.items() if v is not None and v < 95}
+            if low:
+                worst = min(low.values())
+                add("missed", "critical" if worst < 80 else "warning", "Missing blocks/chunks/endorsements",
+                    "This epoch: " + ", ".join(f"{k} {v:.1f}%" for k, v in low.items()) + " produced (below 95%).")
+            if (L.get("validator_status") or "").startswith("Active") and L.get("in_next_epoch") is False:
+                add("not_next", "critical", "Not in the next epoch's validator set",
+                    "The validator is active now but will drop out next epoch.")
+            if L.get("kickout_reason"):
+                add("kicked", "warning", "Kicked out last epoch", json.dumps(L["kickout_reason"])[:200])
+            if L.get("validators_stale"):
+                add("val_stale", "warning", "Validator data is stale", "The validators RPC call hasn't succeeded recently.")
+        if cfg["collect_logs"]:
+            n = conn.execute("SELECT COUNT(*) FROM node_logs WHERE level = 'ERROR' AND ts >= ?",
+                             (time.time() - 900,)).fetchone()[0]
+            if n > 10:
+                add("neard_errors", "warning", "neard is logging errors", f"{n} ERROR lines in the last 15 minutes.")
+        # ---- host resources (USE): saturation and errors that users would notice
+        if cfg["collect_system"]:
+            w = self._window(conn, "system", ["disk_await_ms", "disk_read_iops", "disk_write_iops", "swap_in_bps",
+                                               "mem_available", "mem_total", "tcp_retrans_pct", "net_errors_ps",
+                                               "net_drops_ps", "cpu_steal", "cpu_iowait", "fd_pct"], 300)
+            load10 = self._window(conn, "system", ["load_per_core"], 600)["load_per_core"]
+            for fs in (app.system.ext.details.get("filesystems") or []):
+                for kind, pct in (("space", fs.get("pct")), ("inodes", fs.get("inode_pct"))):
+                    if pct is not None and pct >= 85:
+                        add(f"fs_{kind}_{fs['mount']}", "critical" if pct >= 90 else "warning",
+                            f"Filesystem {fs['mount']} is {pct:.0f}% full ({kind})",
+                            "Free up space or grow the volume before it fills." if kind == "space" else
+                            "Running out of inodes (too many files).")
+            iops = (w["disk_read_iops"] or 0) + (w["disk_write_iops"] or 0)
+            if w["disk_await_ms"] is not None and w["disk_await_ms"] > 50 and iops > 5:
+                add("disk_latency", "warning", "Disk I/O latency is high",
+                    f"Average request takes {w['disk_await_ms']:.0f} ms over 5 minutes ({iops:.0f} IOPS).")
+            oom = self._window(conn, "system", ["oom_kills"], 3600, "SUM")["oom_kills"]
+            if oom:
+                add("oom", "critical", "Out-of-memory kills", f"The kernel killed {oom:.0f} process(es) in the last hour.")
+            if w["swap_in_bps"] is not None and w["swap_in_bps"] > 1_000_000:
+                add("swapping", "warning", "System is swapping", f"Swap-in {w['swap_in_bps'] / 1e6:.1f} MB/s (5-min average).")
+            if w["mem_available"] is not None and w["mem_total"] and w["mem_available"] / w["mem_total"] < 0.05:
+                add("mem_low", "warning", "Memory almost exhausted", "Less than 5% of memory available (5-min average).")
+            if w["tcp_retrans_pct"] is not None and w["tcp_retrans_pct"] > 5:
+                add("retrans", "warning", "High TCP retransmits", f"{w['tcp_retrans_pct']:.1f}% of segments retransmitted (5-min average).")
+            if (w["net_errors_ps"] or 0) + (w["net_drops_ps"] or 0) > 10:
+                add("net_errors", "warning", "Network errors and drops",
+                    f"{(w['net_errors_ps'] or 0) + (w['net_drops_ps'] or 0):.0f} packet errors/drops per second (5-min average).")
+            if w["cpu_steal"] is not None and w["cpu_steal"] > 10:
+                add("steal", "warning", "CPU steal is high", f"{w['cpu_steal']:.0f}% of CPU time taken by the hypervisor (noisy neighbour).")
+            if w["cpu_iowait"] is not None and w["cpu_iowait"] > 30:
+                add("iowait", "warning", "CPU waiting on disk", f"{w['cpu_iowait']:.0f}% iowait (5-min average).")
+            if load10 is not None and load10 > 2:
+                add("load", "warning", "CPU is saturated", f"Load is {load10:.1f}× the core count (10-min average).")
+            if w["fd_pct"] is not None and w["fd_pct"] > 80:
+                add("fds", "warning", "File descriptors running out", f"{w['fd_pct']:.0f}% of the system limit in use.")
+            zombies = self._latest(conn, "system", "proc_zombies")
+            if zombies and zombies > 50:
+                add("zombies", "warning", "Many zombie processes", f"{zombies:.0f} zombie processes.")
+            temp = self._latest(conn, "system", "temp_max_c")
+            if temp is not None and temp > 85:
+                add("temp", "critical" if temp > 95 else "warning", "Hardware is running hot", f"Hottest sensor at {temp:.0f} °C.")
+        # ---- slow health / security checks
+        if cfg["collect_health"] and app.monitor is not None:
+            r = app.monitor.snapshot()
+            c = r.get("clock") or {}
+            if c.get("synced") is False:
+                add("ntp", "warning", "Clock isn't NTP-synchronised", c.get("detail", ""))
+            if c.get("offset_ms") is not None and abs(c["offset_ms"]) > 100:
+                add("clock_drift", "critical" if abs(c["offset_ms"]) > 500 else "warning", "Clock drift",
+                    f"System clock is off by {c['offset_ms']:+.0f} ms.")
+            if (r.get("dns") or {}).get("status") == "warn":
+                add("dns", "warning", "DNS resolution is failing or slow", r["dns"].get("detail", ""))
+            if (r.get("smart") or {}).get("status") == "fail":
+                add("smart", "critical", "A drive is failing (SMART)", r["smart"].get("detail", ""))
+            if (r.get("ipmi") or {}).get("status") == "fail":
+                add("ipmi", "critical", "Power supply or fan failure", r["ipmi"].get("detail", ""))
+            for cert in (r.get("tls") or {}).get("certs", []):
+                if cert.get("status") in ("fail", "warn") and cert.get("days_left", 0) is not None:
+                    add(f"tls_{cert['host']}", "critical" if cert["status"] == "fail" else "warning",
+                        f"TLS certificate: {cert['host']}", cert.get("detail", ""))
+            pt = r.get("patches") or {}
+            if pt.get("security"):
+                add("patches", "info", "Security updates pending", pt.get("detail", ""))
+            elif pt.get("reboot_required"):
+                add("reboot", "info", "Reboot required", "A reboot is needed to finish installing updates.")
+            if (r.get("last_boot") or {}).get("unexpected"):
+                add("unexpected_reboot", "warning", "Last reboot was unexpected", r["last_boot"].get("detail", ""))
+            fails = self._window(conn, "system", ["failed_logins"], 3600, "SUM")["failed_logins"]
+            if fails and fails > 100:
+                add("logins", "warning", "Many failed logins", f"{fails:.0f} failed SSH logins in the last hour.")
+        for item in (app.host_checks or {}).get("items", []):
+            if item.get("status") == "fail":
+                add(f"hostcheck_{item.get('id')}", "warning", f"Host check failed: {item.get('title')}", item.get("detail", ""))
+        out.sort(key=lambda a: (SEVERITY_ORDER.get(a["severity"], 9), a["title"]))
+        return out
+
+    def run(self, db_path, stop):
+        conn = db_connect(db_path)
+        while not stop.is_set():
+            try:
+                alerts, now = self.evaluate(conn), time.time()
+                ids = {a["id"] for a in alerts}
+                self.since = {k: v for k, v in self.since.items() if k in ids}
+                for a in alerts:
+                    a["since"] = self.since.setdefault(a["id"], now)
+                if [(a["id"], a["severity"]) for a in alerts] != [(a["id"], a["severity"]) for a in self.app.alerts]:
+                    DATA_GEN.bump()
+                self.app.alerts = alerts
+            except Exception as e:
+                print(f"[alerts] evaluation error: {e}", flush=True)
+            stop.wait(self.INTERVAL)
+        conn.close()
+
+
 # --------------------------------------------------------------------------- http
 
 class App:
-    def __init__(self, config, near_collector, pinger, logs):
+    def __init__(self, config, near_collector, pinger, logs, system=None, monitor=None):
         self.config = config
         self.near = near_collector
         self.pinger = pinger
         self.logs = logs
+        self.system = system
+        self.monitor = monitor
+        self.alerts = []
         self.host_checks = {"time": None, "running": True, "items": []}  # filled once at startup
         self.db_path = os.path.join(BASE_DIR, config.get("db_path"))
         self.pool = DBPool(self.db_path)
@@ -2072,6 +2303,16 @@ def make_handler(app, hosts):
                 return self._send(200, {**app.near.latest, "host_checks": app.host_checks,
                                         "server_hostname": socket.gethostname(), "app_version": VERSION_INFO,
                                         "read_only": bool(app.config.get("read_only"))})
+            if u.path == "/api/health":
+                det = app.system.ext.details if app.system else {}
+                return self._send(200, {
+                    "time": time.time(), "alerts": app.alerts,
+                    "checks": app.monitor.snapshot() if app.monitor else {},
+                    "filesystems": det.get("filesystems", []), "disks": det.get("disks", []),
+                    "nics": det.get("nics", []), "tcp_states": det.get("tcp_states", {}),
+                    "temperatures": det.get("temperatures", []), "fans": det.get("fans", []),
+                    "cores": psutil.cpu_count(), "platform": sys.platform,
+                })
             # Only API routes take ?range=; static files ignore query strings.
             rng = self._qnum(q, "range", 3600, 60, MAX_RANGE_SEC) if u.path.startswith("/api/") else None
             if u.path == "/api/logs":
@@ -2117,6 +2358,7 @@ def make_handler(app, hosts):
                             "system": db_query(conn, "system", SYSTEM_COLS, since, bucket),
                             "near": db_query(conn, "near", NEAR_COLS, since, bucket),
                             "versions": version_changes(conn, since),
+                            "epochs": epoch_marks(conn, since),
                             "logs": app.logs.series(conn, since, max(bucket, 60)),
                             "ping": {**db_query(conn, "ping_rounds", PING_COLS, since, ping_bucket),
                                      "bucket": ping_bucket},
@@ -2186,8 +2428,12 @@ def main():
     near.db_path = db_path
     # The two collectors share one `changed` event; give each its own view of it.
     sys_cfg, near_cfg = config, _ConfigView(config)
+    system = SystemCollector(config)
+    monitor = health.HealthMonitor(config, on_change=DATA_GEN.bump)
+    system.monitor = monitor
+    threading.Thread(target=monitor.run, args=(stop,), daemon=True).start()
     threading.Thread(target=run_loop, daemon=True,
-                     args=("system", sys_cfg, SystemCollector(config), "system", SYSTEM_COLS, db_path, stop, True,
+                     args=("system", sys_cfg, system, "system", SYSTEM_COLS, db_path, stop, True,
                            lambda: config.get("collect_system"))).start()
     threading.Thread(target=run_loop, daemon=True,
                      args=("near", near_cfg, near, "near", NEAR_COLS, db_path, stop, False,
@@ -2199,7 +2445,8 @@ def main():
     logs = LogCollector(config)
     threading.Thread(target=logs.run, args=(db_path, stop), daemon=True).start()
 
-    app = App(config, near, pinger, logs)
+    app = App(config, near, pinger, logs, system, monitor)
+    threading.Thread(target=AlertEngine(app).run, args=(db_path, stop), daemon=True).start()
 
     def host_checks():  # once per service start, off the main thread (firewall tools can be slow)
         app.host_checks = run_host_checks(config, near, stop=stop)
