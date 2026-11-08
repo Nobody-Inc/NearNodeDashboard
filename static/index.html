@@ -120,6 +120,17 @@ h2 { font-size: 15px; font-weight: 650; margin: 28px 0 12px; color: var(--text);
 .banner { border: 1px solid var(--border); border-left: 4px solid var(--critical); background: var(--surface);
   border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; display: none; }
 .banner.show { display: block; }
+.ro-notice { border: 1px solid var(--border); border-left: 4px solid var(--warning); background: var(--surface);
+  border-radius: 8px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; color: var(--text-2); }
+.ro-notice b { color: var(--text); }
+.ro-notice code, .ro-dialog code { font-size: 12px; }
+.ro-dialog { border-left: 4px solid var(--warning); background: var(--wash); border-radius: 8px;
+  padding: 10px 12px; margin: 0 0 14px; font-size: 13px; color: var(--text-2); }
+.ro-dialog b { color: var(--text); }
+.btn .lock { margin-left: 6px; color: var(--warning); }
+.toggle.disabled { opacity: 0.55; cursor: not-allowed; }
+.field input:disabled, .field select:disabled { opacity: 0.6; cursor: not-allowed; }
+.field label:has(input:disabled), .collect label:has(input:disabled) { opacity: 0.7; }
 
 dialog { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--text);
   padding: 0; width: min(560px, calc(100vw - 32px)); }
@@ -186,6 +197,11 @@ tr.gone:hover td { opacity: 0.85; }
   </header>
 
   <div class="banner" id="banner"></div>
+  <div class="ro-notice" id="readOnlyNotice" role="status" hidden>
+    <span style="color:var(--warning)">⚠</span> <b>Read-only mode.</b> Settings can't be changed from this page
+    (including 1s mode). To change them, set <code>"read_only": false</code> in <code>config.json</code> on the
+    server and restart the dashboard.
+  </div>
 
   <div class="tiles" id="tiles"></div>
 
@@ -304,6 +320,11 @@ tr.gone:hover td { opacity: 0.85; }
 <dialog id="settings">
   <form method="dialog" id="settingsForm">
     <h3>Settings</h3>
+    <div class="ro-dialog" id="settingsReadOnly" tabindex="-1" hidden>
+      <span style="color:var(--warning)">⚠</span> <b>Read-only mode:</b> these settings are shown for reference and
+      can't be changed here. Edit <code>config.json</code> on the server (set <code>"read_only": false</code> to unlock)
+      and restart the dashboard.
+    </div>
     <fieldset class="collect">
       <legend>Data collection</legend>
       <label><input type="checkbox" name="collect_system"><span>System<small>CPU, memory, disk, network, uptime</small></span></label>
@@ -415,7 +436,7 @@ tr.gone:hover td { opacity: 0.85; }
     </div>
     <div class="actions">
       <span class="err" id="settingsErr"></span>
-      <button class="btn" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn" id="cancelSettings" value="cancel" formnovalidate>Cancel</button>
       <button class="btn primary" id="saveSettings" value="save">Save</button>
     </div>
   </form>
@@ -840,6 +861,10 @@ function renderNodeName(L) {
 function renderHeader() {
   const L = latest || {}, n = lastData?.near || {}, s = lastData?.system || {};
   renderNodeName(L);
+  if (config && typeof L.read_only === "boolean" && L.read_only !== !!config.read_only) {
+    config.read_only = L.read_only;   // server restarted with read_only changed
+    applyReadOnly();
+  }
   const health = document.getElementById("health");
   const lag = lastOf(n.block_lag_sec);
   const state = syncState();
@@ -1228,17 +1253,44 @@ async function loadConfig() {
   config = await getJSON("/api/config");
   document.getElementById("fast").checked = !!config.fast_mode;
   applySections();
+  applyReadOnly();
 }
 
 async function saveConfig(patch) {
   const r = await fetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
   const body = await r.json();
+  if (r.status === 403 && body.read_only) {   // read-only mode was turned on since the page loaded
+    await loadConfig().catch(() => {});
+  }
   if (!r.ok) throw new Error(body.error || "Save failed");
   config = body;
   document.getElementById("fast").checked = !!config.fast_mode;
   applySections();
+  applyReadOnly();
   schedule();
   setTimeout(refresh, 1500);
+}
+
+// ---------------------------------------------------------------- read-only mode
+// read_only can only be set in config.json on the server; the server refuses every settings
+// change while it's on. The page mirrors that: warning bar, view-only dialog, locked 1s toggle.
+function applyReadOnly() {
+  const ro = !!config?.read_only;
+  document.getElementById("readOnlyNotice").hidden = !ro;
+  document.getElementById("settingsReadOnly").hidden = !ro;
+  const fast = document.getElementById("fast");
+  fast.disabled = ro;
+  fast.closest(".toggle").classList.toggle("disabled", ro);
+  fast.closest(".toggle").title = ro ? "Read-only mode: can't be changed from this page"
+                                     : "Collect every second instead of the configured interval";
+  const btn = document.getElementById("openSettings");
+  btn.innerHTML = ro ? 'Settings<span class="lock" aria-label="read-only">🔒</span>' : "Settings";
+  btn.title = ro ? "Settings are read-only (view only)" : "";
+  for (const el of form.elements) {
+    if (el.name) el.disabled = ro;
+  }
+  document.getElementById("saveSettings").hidden = ro;
+  document.getElementById("cancelSettings").textContent = ro ? "Close" : "Cancel";
 }
 
 // ---------------------------------------------------------------- UI wiring
@@ -1268,7 +1320,12 @@ document.getElementById("openSettings").addEventListener("click", async () => {
     if (el.type === "checkbox") el.checked = !!config[el.name]; else el.value = config[el.name];
   }
   document.getElementById("settingsErr").textContent = "";
+  applyReadOnly();
   dlg.showModal();
+  // In read-only mode every field is disabled, so the browser would focus (and scroll to) the
+  // Close button at the bottom; show the read-only warning at the top instead.
+  dlg.scrollTop = 0;
+  if (config?.read_only) document.getElementById("settingsReadOnly").focus({ preventScroll: true });
 });
 document.getElementById("saveSettings").addEventListener("click", async e => {
   e.preventDefault();

@@ -64,6 +64,10 @@ The dashboard has **no login**. Anyone who can reach its port can view it and ch
 
 Requests must address the server by IP, `localhost` or its own hostname. This blocks DNS-rebinding attacks. To use a DNS name, add `--allow-host your.name` to the service's `ExecStart` line.
 
+**Lock the settings (optional).** To stop anyone changing settings from the page, add `"read_only": true` to
+`/opt/NearNodeDashboard/data/config.json` and run `sudo systemctl restart near-node-dashboard`. The page still works
+and shows its data; the Settings dialog becomes view-only and a warning explains how to unlock it.
+
 ### Running it on your own computer instead
 
 ```bash
@@ -124,6 +128,7 @@ Settings are stored in `config.json` (created on first run). You can change them
 | `log_poll_seconds` | `10` | How often to check the log for new lines |
 | `p2p_port` | `24567` | neard's P2P port (`network.addr` in `~/.near/config.json`), checked for inbound access at startup |
 | `firewall_check_sudo` | `false` | Read firewall rules with `sudo -n` when not root. Only enable it if the service user has passwordless sudo for `ufw`/`iptables`/`nft`/`firewall-cmd`; otherwise each attempt is logged as a failed sudo authentication |
+| `read_only` | `false` | Lock the settings: when `true`, nothing can be changed from the web page (the Settings dialog becomes view-only and 1s mode is locked), and the page shows a warning. It can only be set by editing `config.json` on the server, and takes effect when the dashboard restarts |
 | `ping_enabled` | `true` | Ping every active peer once per round |
 | `ping_method` | `icmp` | `icmp` uses the system `ping` command. `tcp` times a TCP connection to the peer's NEAR port (24567), which works when a peer blocks ICMP |
 | `ping_interval_seconds` | `60` | Seconds between ping rounds. 1s mode doesn't change this |

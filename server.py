@@ -56,6 +56,9 @@ DEFAULT_CONFIG = {
     "collect_validator": True,  # also feeds the "validators on your shard" table
     "collect_peers": True,      # peer tracking, churn and pings
     "collect_logs": True,       # WARN/ERROR lines from the neard service log
+    # Lock the settings: when true, nothing can be changed from the web page (Settings dialog,
+    # 1s-mode toggle). Can only be set by editing this file on the server; takes effect on restart.
+    "read_only": False,
     # Where to read the neard log: "journald" (systemd unit) or "file" (a log file path; plain
     # neard output or Docker json-file logs).
     "log_source": "journald",
@@ -134,8 +137,14 @@ class Config:
                     self.data["db_path"] = value
                     continue
                 try:
-                    self.data.update(validate_config_patch({key: value}))
+                    self.data.update(validate_config_patch({key: value}, from_file=True))
                 except (ValueError, TypeError) as e:
+                    if key == "read_only":
+                        # Fail closed: a typo like "ture" must not silently unlock the settings.
+                        self.data["read_only"] = True
+                        print(f"[config] invalid read_only value {value!r} in {path}: {e}; treating it as "
+                              f"true (settings locked). Use true or false.", flush=True)
+                        continue
                     print(f"[config] ignoring invalid {key!r} in {path}: {e}; using default "
                           f"{DEFAULT_CONFIG.get(key)!r}", flush=True)
         else:
@@ -156,8 +165,14 @@ class Config:
         os.replace(tmp, self.path)
 
     def update(self, patch):
+        """Apply a settings change from the web page. Refused entirely in read-only mode."""
+        with self.lock:
+            if self.data.get("read_only"):
+                raise PermissionError(READ_ONLY_MESSAGE)
         clean = validate_config_patch(patch)
         with self.lock:
+            if self.data.get("read_only"):  # re-check under the same lock as the write
+                raise PermissionError(READ_ONLY_MESSAGE)
             self.data.update(clean)
             self.save()
         self.changed.set()
@@ -190,12 +205,23 @@ def num(v):
     return f if math.isfinite(f) else None
 
 
-def validate_config_patch(patch):
+READ_ONLY_MESSAGE = ("Settings are read-only: \"read_only\" is enabled in config.json on the server. "
+                     "To change settings, set it to false there and restart the dashboard.")
+
+
+def validate_config_patch(patch, from_file=False):
+    """Validate settings. `from_file` is True when loading config.json: only then may
+    read_only be set, so the web page can never unlock itself."""
     if not isinstance(patch, dict):
         raise ValueError("settings must be a JSON object")
     out = {}
     for key, value in patch.items():
         if key not in DEFAULT_CONFIG or key == "db_path":
+            continue
+        if key == "read_only":
+            if not from_file:
+                raise ValueError("read_only can only be changed by editing config.json on the server")
+            out[key] = to_bool(value)
             continue
         if key in ("interval_seconds", "validators_interval_seconds"):
             value = int(value)
@@ -1821,7 +1847,8 @@ def make_handler(app, hosts):
                 return self._send(200, app.config.snapshot())
             if u.path == "/api/latest":
                 return self._send(200, {**app.near.latest, "host_checks": app.host_checks,
-                                        "server_hostname": socket.gethostname()})
+                                        "server_hostname": socket.gethostname(),
+                                        "read_only": bool(app.config.get("read_only"))})
             # Only API routes take ?range=; static files ignore query strings.
             rng = self._qnum(q, "range", 3600, 60, MAX_RANGE_SEC) if u.path.startswith("/api/") else None
             if u.path == "/api/logs":
@@ -1901,6 +1928,8 @@ def make_handler(app, hosts):
                     raise ValueError("request body too large")
                 patch = json.loads(self.rfile.read(length) or b"{}")
                 return self._send(200, app.config.update(patch))
+            except PermissionError as e:   # read-only mode
+                return self._send(403, {"error": str(e), "read_only": True})
             except (ValueError, TypeError) as e:
                 return self._send(400, {"error": str(e)})
 
@@ -1968,6 +1997,9 @@ def main():
           flush=True)
     for url in listen_urls(args.host, args.port):
         print(f"  {url}", flush=True)
+    if config.get("read_only"):
+        print("  Read-only mode: settings can't be changed from the web page (read_only in config.json).",
+              flush=True)
     if args.host not in ("127.0.0.1", "::1", "localhost"):
         print("  Note: the dashboard has no login. Anyone who can reach this port can view it and change "
               "its settings; restrict the port with a firewall.", flush=True)
