@@ -27,6 +27,7 @@ The installer:
 - creates a system user `nearnode` with no login shell, and adds it to the `systemd-journal` group so it can read neard's log (and nothing broader);
 - copies the dashboard to `/opt/NearNodeDashboard` and installs its Python dependencies in a private virtualenv. The code is owned by root and read-only for the service; `nearnode` can only write to `/opt/NearNodeDashboard/data` (database and settings);
 - finds neard's systemd service and sets it as both the log source and a startup dependency;
+- writes default settings to `/opt/NearNodeDashboard/data/config.json` with **settings locked** (`"read_only": true`). To change settings from the web page you must set `"read_only": false` there yourself and restart the service (see *Access and security*);
 - installs, enables and starts the `near-node-dashboard` service, listening on port 8787 on all of the server's IPv4 addresses, then checks that it answers.
 
 **3. Open it** in a browser at `http://NODE:8787` (the installer prints the exact addresses). Then **restrict who can reach it**: see *Access and security* below.
@@ -53,7 +54,7 @@ sudo ./install.sh
 
 ### Access and security
 
-The dashboard has **no login**. Anyone who can reach its port can view it and change its settings, including the RPC URL and the log file it reads. So limit who can connect:
+The dashboard has **no login**. Anyone who can reach its port can view it, and, once you unlock the settings, change them, including the RPC URL and the log file it reads. So limit who can connect:
 
 - **Allow only your IP** with the server's firewall. With ufw:
   ```bash
@@ -64,9 +65,10 @@ The dashboard has **no login**. Anyone who can reach its port can view it and ch
 
 Requests must address the server by IP, `localhost` or its own hostname. This blocks DNS-rebinding attacks. To use a DNS name, add `--allow-host your.name` to the service's `ExecStart` line.
 
-**Lock the settings (optional).** To stop anyone changing settings from the page, add `"read_only": true` to
-`/opt/NearNodeDashboard/data/config.json` and run `sudo systemctl restart near-node-dashboard`. The page still works
-and shows its data; the Settings dialog becomes view-only and a warning explains how to unlock it.
+**Settings are read-only by default.** Out of the box nothing can be changed from the page: the Settings dialog is view-only and a warning explains how to unlock it. To change settings from the page, set `"read_only": false` in
+`/opt/NearNodeDashboard/data/config.json` and run `sudo systemctl restart near-node-dashboard`. Set it back to `true` (and restart) to lock them again. The installer prints which mode a server is in.
+
+Upgrading from a version before read-only became the default: if your `config.json` has no `"read_only"` line (settings were never saved from the page), the dashboard is now read-only. Add `"read_only": false` to keep editing from the page.
 
 ### Central monitoring (optional exporter)
 
@@ -212,7 +214,7 @@ Cheap metrics are sampled with every collection; slower checks run on their own 
 | `log_poll_seconds` | `10` | How often to check the log for new lines |
 | `p2p_port` | `24567` | neard's P2P port (`network.addr` in `~/.near/config.json`), checked for inbound access at startup |
 | `firewall_check_sudo` | `false` | Read firewall rules with `sudo -n` when not root. Only enable it if the service user has passwordless sudo for `ufw`/`iptables`/`nft`/`firewall-cmd`; otherwise each attempt is logged as a failed sudo authentication |
-| `read_only` | `false` | Lock the settings: when `true`, nothing can be changed from the web page (the Settings dialog becomes view-only and 1s mode is locked), and the page shows a warning. It can only be set by editing `config.json` on the server, and takes effect when the dashboard restarts |
+| `read_only` | `true` | Lock the settings: when `true` (the default), nothing can be changed from the web page (the Settings dialog becomes view-only and 1s mode is locked), and the page shows a warning. It can only be set by editing `config.json` on the server, and takes effect when the dashboard restarts |
 | `collect_health` | `true` | Run the slower health and security checks (DNS, clock, failed logins, system log rates, SMART, updates, TLS, IPMI) |
 | `dns_check_host` | `near.org` | Hostname resolved every minute to measure DNS time |
 | `tls_check_hosts` | *(blank)* | Extra HTTPS endpoints (`host[:port]`, comma-separated) whose certificate expiry is checked; HTTPS RPC URLs are always checked |

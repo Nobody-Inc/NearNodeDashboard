@@ -272,18 +272,19 @@ run chown "root:$SERVICE_USER" "$INSTALL_DIR"
 run chmod 750 "$INSTALL_DIR"
 
 if [ ! -e "$CONFIG" ]; then
-  # New install: default settings, with the log reader pointed at the detected neard unit.
-  # Other defaults (RPC at 127.0.0.1:3030, 60s sampling, 24h retention) suit a dashboard on the node.
+  # New install: default settings, with the log reader pointed at the detected neard unit and the
+  # settings locked (read_only; unlock by editing the file). Other defaults (RPC at 127.0.0.1:3030,
+  # 60s sampling, 24h retention) suit a dashboard on the node.
   say "Writing default settings to $CONFIG"
   UNIT_BASE="${NEARD_UNIT%.service}"
   if [ "$DRY_RUN" = 1 ]; then
-    run "write defaults (log_unit=$UNIT_BASE) to $CONFIG as $SERVICE_USER"
+    run "write defaults (log_unit=$UNIT_BASE, read_only=true) to $CONFIG as $SERVICE_USER"
   else
     runuser -u "$SERVICE_USER" -- "$INSTALL_DIR/.venv/bin/python" - "$CONFIG" "$UNIT_BASE" <<'PY'
 import json, sys
 path, unit = sys.argv[1], sys.argv[2]
 with open(path, "x") as f:          # "x": never follow or overwrite an existing path
-    json.dump({"log_unit": unit}, f, indent=2)
+    json.dump({"log_unit": unit, "read_only": True}, f, indent=2)
 PY
   fi
 else
@@ -428,6 +429,21 @@ elif [ -f "$EXPORTER_UNIT" ]; then
 fi
 
 HOST_HINT="$(hostname -f 2>/dev/null || hostname)"
+# Settings are read-only unless config.json says "read_only": false (the default is read-only).
+READ_ONLY=1
+if [ -f "$CONFIG" ] && grep -Eq '"read_only"[[:space:]]*:[[:space:]]*false' "$CONFIG"; then
+  READ_ONLY=0
+fi
+echo
+if [ "$READ_ONLY" = 1 ]; then
+  echo "Settings are READ-ONLY: they can't be changed from the web page. To change them from the page,"
+  echo "edit $CONFIG and set"
+  echo '    "read_only": false'
+  echo "then run: sudo systemctl restart $SERVICE_NAME"
+else
+  echo "Settings can be changed from the web page (\"read_only\": false in $CONFIG)."
+  echo "To lock them, set \"read_only\": true there and restart $SERVICE_NAME."
+fi
 echo
 case "$LISTEN" in
   127.0.0.1|::1)
@@ -443,7 +459,7 @@ case "$LISTEN" in
       case "$LISTEN" in *:*) echo "    http://[$LISTEN]:$PORT" ;; *) echo "    http://$LISTEN:$PORT" ;; esac
     fi
     echo
-    echo "The dashboard has no login. Anyone who can reach port $PORT can view it and change its settings."
+    echo "The dashboard has no login. Anyone who can reach port $PORT can view it$([ "$READ_ONLY" = 0 ] && echo " and change its settings")."
     echo "Allow only your own IP, e.g. with ufw:"
     echo "    sudo ufw allow from <your-ip> to any port $PORT proto tcp" ;;
 esac

@@ -37,9 +37,9 @@ CORE_SETTINGS = {
     "fast_mode": Setting(False, boolean),
     # How long to keep samples.
     "retention_hours": Setting(24, number(0.05, 24 * 365)),
-    # Lock the settings: when true, nothing can be changed from the web page. Can only be set in
-    # this file (takes effect on restart); an invalid value fails closed (locked).
-    "read_only": Setting(False, boolean, page="reject", invalid=True),
+    # Lock the settings: when true (the default), nothing can be changed from the web page. Can
+    # only be changed in this file (takes effect on restart); an invalid value fails closed (locked).
+    "read_only": Setting(True, boolean, page="reject", invalid=True),
     # Which modules run (file only; takes effect on restart). E.g. ["system"] for a plain server monitor.
     "modules": Setting(list(AVAILABLE_MODULES), module_list, page="ignore"),
     "db_path": Setting("data/stats.db", nonempty_text, page="ignore"),
@@ -106,9 +106,12 @@ def main(doc=None):
     if config.get("read_only"):
         print("  Read-only mode: settings can't be changed from the web page (read_only in config.json).",
               flush=True)
+    else:
+        print(f"  Settings can be changed from the web page (\"read_only\": false in {args.config}).", flush=True)
     if args.host not in ("127.0.0.1", "::1", "localhost"):
-        print("  Note: the dashboard has no login. Anyone who can reach this port can view it and change "
-              "its settings; restrict the port with a firewall.", flush=True)
+        print("  Note: the dashboard has no login. Anyone who can reach this port can view it"
+              + ("" if config.get("read_only") else " and change its settings")
+              + "; restrict the port with a firewall.", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
