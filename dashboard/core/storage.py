@@ -107,6 +107,7 @@ def db_init(path, series, statements):
     modules' other CREATE TABLE / CREATE INDEX statements."""
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     conn = db_connect(path)
+    enable_incremental_vacuum(conn)
     for stmt in statements:
         conn.execute(stmt)
     for table, cols in series.items():
@@ -117,6 +118,35 @@ def db_init(path, series, statements):
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {c} REAL")
     conn.commit()
     conn.close()
+
+
+def enable_incremental_vacuum(conn):
+    """Let the file shrink after old data is deleted (see prune). A new database just needs the
+    setting; an existing one is rebuilt once with VACUUM, which needs free disk space about the size
+    of the database and can take a few seconds."""
+    if conn.execute("PRAGMA auto_vacuum").fetchone()[0] == 2:   # already INCREMENTAL
+        return
+    conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
+    if conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]:
+        try:
+            print("[db] enabling incremental vacuum (one-time rebuild of the database)...", flush=True)
+            conn.execute("VACUUM")
+        except sqlite3.Error as e:   # e.g. not enough disk space: keep running without it
+            print(f"[db] couldn't enable incremental vacuum: {e}", flush=True)
+
+
+# Release free pages back to the filesystem only when there are this many (and they are at least
+# this share of the file); otherwise new samples simply reuse them.
+VACUUM_MIN_FREE_PAGES = 1024
+VACUUM_MIN_FREE_SHARE = 0.10
+
+
+def release_free_pages(conn):
+    free = conn.execute("PRAGMA freelist_count").fetchone()[0]
+    total = conn.execute("PRAGMA page_count").fetchone()[0]
+    if free >= VACUUM_MIN_FREE_PAGES and total and free / total >= VACUUM_MIN_FREE_SHARE:
+        conn.execute("PRAGMA incremental_vacuum").fetchall()   # frees one page per step: run it to the end
+        conn.commit()
 
 
 def db_query(conn, table, cols, since, bucket):
@@ -132,8 +162,12 @@ def db_query(conn, table, cols, since, bucket):
 
 
 def prune(conn, statements, cutoff):
-    """Run the modules' retention statements (each takes the cutoff timestamp as its one parameter)."""
+    """Run the modules' retention statements (each takes the cutoff timestamp as its one parameter).
+    Cached responses are invalidated only when rows were actually deleted."""
+    before = conn.total_changes
     for stmt in statements:
         conn.execute(stmt, (cutoff,))
     conn.commit()
-    DATA_GEN.bump()
+    if conn.total_changes != before:
+        DATA_GEN.bump()
+        release_free_pages(conn)

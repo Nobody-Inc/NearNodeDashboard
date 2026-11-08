@@ -116,6 +116,7 @@ class ExtendedStats:
         self.proc, self.sys = proc_root, sys_root
         self.prev = None          # (time, counters)
         self.proc_cache = (0.0, None, None)
+        self._slow = {}           # name -> (time, value), see _every()
         self.details = {}
         psutil.cpu_times_percent(interval=None)  # prime: next call measures since now
 
@@ -141,6 +142,64 @@ class ExtendedStats:
             c["snmp"] = {}
         return c
 
+    # Values that change slowly (filesystem space, sensors, TCP states, link speeds) are read at most
+    # this often, so 1s mode doesn't re-scan mounts, hwmon and /proc/net/tcp every second.
+    SLOW_EVERY = 10
+
+    def _every(self, name, now, read):
+        hit = self._slow.get(name)
+        if hit is None or now - hit[0] >= self.SLOW_EVERY or now < hit[0]:
+            hit = self._slow[name] = (now, read())
+        return hit[1]
+
+    def _filesystems(self):
+        filesystems, seen = [], set()
+        try:
+            parts = psutil.disk_partitions(all=False)
+        except Exception:
+            parts = []
+        for p in parts:
+            if p.fstype in PSEUDO_FS or p.device in seen or p.mountpoint.startswith(("/snap/", "/System/Volumes/")) \
+                    and p.mountpoint != "/System/Volumes/Data":
+                continue
+            seen.add(p.device)
+            try:
+                du = psutil.disk_usage(p.mountpoint)
+                st = os.statvfs(p.mountpoint)
+            except (OSError, PermissionError):
+                continue
+            inodes = st.f_files
+            inode_pct = (inodes - st.f_ffree) / inodes * 100 if inodes else None
+            filesystems.append({"mount": p.mountpoint, "device": p.device, "fstype": p.fstype, "used": du.used,
+                                "total": du.total, "pct": du.percent, "inode_pct": inode_pct,
+                                "inodes_used": inodes - st.f_ffree if inodes else None, "inodes_total": inodes or None})
+        return filesystems
+
+    @staticmethod
+    def _sensors():
+        temps, fans = [], []
+        try:
+            for chip, entries in (psutil.sensors_temperatures() or {}).items():
+                for e in entries:
+                    if _num(e.current) is not None and -50 < e.current < 150:
+                        temps.append({"chip": chip, "label": e.label or chip, "current": e.current,
+                                      "high": _num(e.high), "critical": _num(e.critical)})
+        except (AttributeError, OSError):
+            pass
+        try:
+            for chip, entries in (psutil.sensors_fans() or {}).items():
+                fans.extend({"chip": chip, "label": e.label or chip, "rpm": e.current} for e in entries)
+        except (AttributeError, OSError):
+            pass
+        return temps, fans
+
+    @staticmethod
+    def _nic_stats():
+        try:
+            return psutil.net_if_stats() or {}
+        except Exception:
+            return {}
+
     def sample(self, now):
         row, det = {}, {}
         cores = psutil.cpu_count() or 1
@@ -165,32 +224,13 @@ class ExtendedStats:
             row["procs_running"] = c["stat"]["procs_running"]
             row["procs_blocked"] = c["stat"].get("procs_blocked")
 
-        # ---- filesystems: space and inodes, per real filesystem
-        filesystems, seen = [], set()
-        try:
-            parts = psutil.disk_partitions(all=False)
-        except Exception:
-            parts = []
-        for p in parts:
-            if p.fstype in PSEUDO_FS or p.device in seen or p.mountpoint.startswith(("/snap/", "/System/Volumes/")) \
-                    and p.mountpoint != "/System/Volumes/Data":
-                continue
-            seen.add(p.device)
-            try:
-                du = psutil.disk_usage(p.mountpoint)
-                st = os.statvfs(p.mountpoint)
-            except (OSError, PermissionError):
-                continue
-            inodes = st.f_files
-            inode_pct = (inodes - st.f_ffree) / inodes * 100 if inodes else None
-            filesystems.append({"mount": p.mountpoint, "device": p.device, "fstype": p.fstype, "used": du.used,
-                                "total": du.total, "pct": du.percent, "inode_pct": inode_pct,
-                                "inodes_used": inodes - st.f_ffree if inodes else None, "inodes_total": inodes or None})
+        # ---- filesystems: space and inodes, per real filesystem (every SLOW_EVERY seconds)
+        filesystems = self._every("filesystems", now, self._filesystems)
         det["filesystems"] = filesystems
         row["fs_max_pct"] = max((f["pct"] for f in filesystems), default=None)
         row["inode_max_pct"] = max((f["inode_pct"] for f in filesystems if f["inode_pct"] is not None), default=None)
 
-        # ---- system health: file descriptors, processes/zombies (every 10 s), temperatures
+        # ---- system health: file descriptors, processes/zombies and temperatures (every 10 s)
         fnr = file_nr(self.proc) if LINUX else None
         if fnr:
             used = fnr[0] - fnr[1]
@@ -205,26 +245,13 @@ class ExtendedStats:
                     zombies += 1
             self.proc_cache = (now, count, zombies)
         row["proc_count"], row["proc_zombies"] = self.proc_cache[1], self.proc_cache[2]
-        temps, fans = [], []
-        try:
-            for chip, entries in (psutil.sensors_temperatures() or {}).items():
-                for e in entries:
-                    if _num(e.current) is not None and -50 < e.current < 150:
-                        temps.append({"chip": chip, "label": e.label or chip, "current": e.current,
-                                      "high": _num(e.high), "critical": _num(e.critical)})
-        except (AttributeError, OSError):
-            pass
-        try:
-            for chip, entries in (psutil.sensors_fans() or {}).items():
-                fans.extend({"chip": chip, "label": e.label or chip, "rpm": e.current} for e in entries)
-        except (AttributeError, OSError):
-            pass
+        temps, fans = self._every("sensors", now, self._sensors)
         det["temperatures"], det["fans"] = temps, fans
         row["temp_max_c"] = max((x["current"] for x in temps), default=None)
 
         # ---- TCP connection states (Linux)
         if LINUX:
-            states = tcp_states(self.proc)
+            states = self._every("tcp_states", now, lambda: tcp_states(self.proc))
             det["tcp_states"] = states
             row["tcp_established"] = states.get("established", 0)
             row["tcp_time_wait"] = states.get("time_wait", 0)
@@ -232,11 +259,7 @@ class ExtendedStats:
             row["tcp_total"] = sum(v for k, v in states.items() if k != "listen")
 
         # ---- rates from counters
-        nic_stats = {}
-        try:
-            nic_stats = psutil.net_if_stats() or {}
-        except Exception:
-            pass
+        nic_stats = self._every("nic_stats", now, self._nic_stats)
         if self.prev:
             dt = max(now - self.prev[0], 1e-6)
             p = self.prev[1]

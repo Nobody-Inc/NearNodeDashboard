@@ -116,12 +116,32 @@ const epochLines = {
   }
 };
 
-const CHARTS = [];
+const CHARTS = [];          // charts that have been built
+const PENDING_CARDS = [];   // declared by the module scripts; built once their module is known to run
 /**
  * def: { id, group, title, sub?, src, series:[{key,label,color,scale?}], fmt, axisFmt?, yMin?, yMax?,
  *        headline?(latest values) , trend?: (stats, def) => html, extra?: (ctx) => html }
  */
-function card(def) {
+function card(def) {   // declare a chart; buildCards() creates it if its module runs
+  PENDING_CARDS.push(def);
+  return def;
+}
+
+// Create the charts of running modules. A module that isn't running never gets its charts built.
+function buildCards() {
+  let built = false;
+  for (let i = 0; i < PENDING_CARDS.length;) {
+    const def = PENDING_CARDS[i];
+    if (moduleOn(sectionModule(chartSection(def.group))?.name)) {
+      buildCard(def);
+      PENDING_CARDS.splice(i, 1);
+      built = true;
+    } else i++;
+  }
+  if (built) themeCharts();
+}
+
+function buildCard(def) {
   const el = document.createElement("div");
   el.className = "card";
   el.innerHTML = `
@@ -162,7 +182,6 @@ function card(def) {
     plugins: [crosshair, epochLines],
   });
   CHARTS.push(def);
-  return def;
 }
 
 function themeCharts() {
@@ -586,6 +605,7 @@ document.querySelectorAll(".sec-head").forEach(btn => btn.addEventListener("clic
 // Hide the sections, header items and settings of modules the server isn't running.
 function applyModules() {
   document.querySelectorAll("[data-module]").forEach(el => { el.hidden = !moduleOn(el.dataset.module); });
+  if (config || latest) buildCards();   // once the server has said which modules run
   applySections();
 }
 

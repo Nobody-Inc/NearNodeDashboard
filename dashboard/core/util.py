@@ -25,6 +25,11 @@ def num(v):
     f = float(v)
     return f if math.isfinite(f) else None
 
+def finite(v):
+    """`v` itself if it is a finite number (bool excluded), else None. Unlike num(), ints stay ints."""
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
+
+
 def as_int(v):
     """Integer-valued RPC field (heights, protocol numbers, shard ids), else None."""
     f = num(v)

@@ -4,7 +4,7 @@ samples, so a brief spike doesn't trigger them."""
 
 import time
 
-from dashboard.core.storage import DATA_GEN, db_connect
+from dashboard.core.storage import db_connect
 
 SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2}
 
@@ -25,8 +25,14 @@ class AlertContext:
                                 (time.time() - seconds,)).fetchone()
         return {c: (v if isinstance(v, (int, float)) else None) for c, v in zip(cols, row or [None] * len(cols))}
 
-    def latest(self, table, col):
-        r = self.conn.execute(f"SELECT {col} FROM {table} WHERE {col} IS NOT NULL ORDER BY ts DESC LIMIT 1").fetchone()
+    def latest(self, table, col, max_age=None):
+        """The newest non-null value of a column within the last `max_age` seconds (default: 15
+        minutes or three collection intervals, whichever is longer). Bounded so a column that is
+        always null (no sensors, not a validator) doesn't scan the whole table."""
+        if max_age is None:
+            max_age = max(900, 3 * self.app.config.interval)
+        r = self.conn.execute(f"SELECT {col} FROM {table} WHERE ts >= ? AND {col} IS NOT NULL ORDER BY ts DESC LIMIT 1",
+                              (time.time() - max_age,)).fetchone()
         return r[0] if r and isinstance(r[0], (int, float)) else None
 
 
@@ -56,8 +62,7 @@ class AlertEngine:
                 self.since = {k: v for k, v in self.since.items() if k in ids}
                 for a in alerts:
                     a["since"] = self.since.setdefault(a["id"], now)
-                if [(a["id"], a["severity"]) for a in alerts] != [(a["id"], a["severity"]) for a in self.app.alerts]:
-                    DATA_GEN.bump()
+                # No cache invalidation needed: alerts are served live (/api/latest, /api/alerts, /api/health).
                 self.app.alerts = alerts
             except Exception as e:
                 print(f"[alerts] evaluation error: {e}", flush=True)

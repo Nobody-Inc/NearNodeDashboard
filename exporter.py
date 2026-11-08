@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
 
 from dashboard.core.httpserver import REQUEST_TIMEOUT_SEC, make_server
-from dashboard.core.util import MAX_RPC_RESPONSE_BYTES
+from dashboard.core.util import MAX_RPC_RESPONSE_BYTES, finite as num
 from dashboard.core.version import APP_VERSION
 
 VERSION = APP_VERSION
@@ -48,10 +48,6 @@ def last_value(series, key):
         if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v):
             return v
     return None
-
-
-def num(v):
-    return v if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
 
 
 def build_snapshot(base):

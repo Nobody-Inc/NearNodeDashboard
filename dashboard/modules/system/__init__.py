@@ -10,7 +10,7 @@ from dashboard.core.alerts import alert
 from dashboard.core.collect import run_loop
 from dashboard.core.config import Setting, boolean, existing_path, host_list, hostname, text
 from dashboard.core.module import Module
-from dashboard.core.storage import DATA_GEN, db_query
+from dashboard.core.storage import db_query
 from dashboard.modules.system.checks import HealthMonitor
 from dashboard.modules.system.stats import SystemCollector
 
@@ -61,7 +61,7 @@ class SystemModule(Module):
     def __init__(self, app):
         super().__init__(app)
         self.collector = SystemCollector(self.config)
-        self.monitor = HealthMonitor(self.config, on_change=DATA_GEN.bump)
+        self.monitor = HealthMonitor(self.config)
         self.collector.monitor = self.monitor
 
     def start(self, stop):

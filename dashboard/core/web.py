@@ -1,10 +1,12 @@
 """The HTTP API and static file server. Core routes: /api/config (GET/POST), /api/latest,
 /api/metrics, /api/alerts. Modules add their own routes (Module.routes)."""
 
+import gzip
 import json
 import math
 import os
 import socket
+import threading
 import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlparse
@@ -17,6 +19,21 @@ from dashboard.core.version import BASE_DIR
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 MAX_RANGE_SEC = 366 * 86400
 MAX_POINTS = 2000
+
+
+COMPRESS_MIN_BYTES = 1024
+COMPRESSIBLE = ("application/json", "application/javascript", "text/")
+
+
+class Body(bytes):
+    """A response body that remembers its gzip form, so a cached response (or static file) is
+    compressed once however many clients fetch it."""
+
+    @property
+    def gz(self):
+        if "_gz" not in self.__dict__:
+            self.__dict__["_gz"] = gzip.compress(self, compresslevel=6, mtime=0)
+        return self.__dict__["_gz"]
 
 
 def qnum(q, name, default, lo, hi, cast=float):
@@ -54,13 +71,14 @@ class Request:
     def cached(self, key, compute):
         """JSON bytes from the response cache while no new data has been stored; on a miss, computed
         and serialised once for every client asking for the same view."""
-        return CACHE.get_or_compute(key, lambda: json.dumps(compute()).encode())
+        return CACHE.get_or_compute(key, lambda: Body(json.dumps(compute()).encode()))
 
 
 def make_handler(app, hosts):
     module_routes = {}
     for m in app.modules.values():
         module_routes.update(m.routes())
+    static_cache, static_lock = {}, threading.Lock()   # path -> (mtime_ns, size, etag, Body)
 
     class Handler(BaseHTTPRequestHandler):
         # Drop a connection that sends nothing for this long, so a slow or stalled client can't
@@ -72,13 +90,23 @@ def make_handler(app, hosts):
         def log_message(self, fmt, *args):
             pass
 
-        def _send(self, code, body, ctype="application/json"):
+        def _send(self, code, body, ctype="application/json", cache="no-store", etag=None):
             if not isinstance(body, (bytes, bytearray)):
                 body = json.dumps(body).encode()
+            compressible = len(body) >= COMPRESS_MIN_BYTES and ctype.startswith(COMPRESSIBLE)
+            encoding = None
+            if compressible and "gzip" in (self.headers.get("Accept-Encoding") or "").lower():
+                body, encoding = (body if isinstance(body, Body) else Body(body)).gz, "gzip"
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            if encoding:
+                self.send_header("Content-Encoding", encoding)
+            if compressible:
+                self.send_header("Vary", "Accept-Encoding")
+            self.send_header("Cache-Control", cache)
+            if etag:
+                self.send_header("ETag", etag)
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
             self.end_headers()
@@ -188,7 +216,23 @@ def make_handler(app, hosts):
                 return self._send(404, {"error": "not found"})
             ctype = {".html": "text/html; charset=utf-8", ".js": "application/javascript",
                      ".css": "text/css"}.get(os.path.splitext(full)[1], "application/octet-stream")
-            with open(full, "rb") as f:
-                return self._send(200, f.read(), ctype)
+            # Browsers may keep static files but must revalidate (no-cache): an unchanged file is a
+            # bodiless 304, and an upgrade (new mtime/size, so a new ETag) shows up straight away.
+            st = os.stat(full)
+            with static_lock:
+                hit = static_cache.get(full)
+            if not hit or hit[:2] != (st.st_mtime_ns, st.st_size):
+                with open(full, "rb") as f:
+                    hit = (st.st_mtime_ns, st.st_size, f'"{st.st_mtime_ns:x}-{st.st_size:x}"', Body(f.read()))
+                with static_lock:
+                    static_cache[full] = hit
+            etag = hit[2]
+            if etag in [t.strip() for t in (self.headers.get("If-None-Match") or "").split(",")]:
+                self.send_response(304)
+                self.send_header("ETag", etag)
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                return None
+            return self._send(200, hit[3], ctype, cache="no-cache", etag=etag)
 
     return Handler

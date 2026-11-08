@@ -61,6 +61,7 @@ class NearCollector:
         self.validators_t = 0
         self.validators_busy = False
         self.validators_error = None
+        self._val_stats_key, self._val_stats = None, None   # cached _validator_stats result
         self.active_peers = []
         self.known_producers = []
         self.peers_t = None
@@ -157,15 +158,15 @@ class NearCollector:
             self.latest = latest
             return now, row
 
-        # A load-balanced RPC answers from different nodes; peer lists then alternate between nodes
-        # and show up as false churn. Detect it by the node key changing between samples.
-        self.recent_node_keys = (self.recent_node_keys + [status.get("node_public_key")])[-20:]
-        latest["rpc_nodes_seen"] = len({k for k in self.recent_node_keys if k})
-
         if not isinstance(status, dict):
             latest["error"] = "/status returned an unexpected response"
             self.latest = latest
             return now, row
+
+        # A load-balanced RPC answers from different nodes; peer lists then alternate between nodes
+        # and show up as false churn. Detect it by the node key changing between samples.
+        self.recent_node_keys = (self.recent_node_keys + [status.get("node_public_key")])[-20:]
+        latest["rpc_nodes_seen"] = len({k for k in self.recent_node_keys if k})
         sync = status.get("sync_info") if isinstance(status.get("sync_info"), dict) else {}
         version = status.get("version") if isinstance(status.get("version"), dict) else {}
         height = as_int(sync.get("latest_block_height"))
@@ -256,7 +257,15 @@ class NearCollector:
             # Stale = several fetch intervals without a successful refresh.
             latest["validators_stale"] = now - self.validators_fetched_at > max(3 * v_interval, 180)
         if isinstance(self.validators, dict):
-            row.update(self._validator_stats(self.validators, account, latest))
+            # The validators response only changes every validators_interval_seconds, so its
+            # stats (a sort over every validator) are computed once per fetch, not every sample.
+            key = (self.validators_fetched_at, self._val_gen, account)
+            if self._val_stats_key != key:
+                extra = {}
+                self._val_stats = (self._validator_stats(self.validators, account, extra), extra)
+                self._val_stats_key = key
+            row.update(self._val_stats[0])
+            latest.update(self._val_stats[1])
         self.latest = latest
         return now, row
 

@@ -6,6 +6,7 @@ applyModules();
   markRange();
   themeCharts();
   try { await loadConfig(); } catch {}
+  buildCards();   // if the settings couldn't be loaded, build every module's charts
   await refresh();
   schedule();
 })();
