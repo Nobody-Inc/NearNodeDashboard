@@ -2,6 +2,8 @@
 
 A local dashboard for the server that runs your NEAR validator (`neard`). It records system and NEAR node metrics in SQLite and shows each one as a chart with its current value, average, min, max and per-hour trend.
 
+![Near Node Dashboard overview](docs/screenshots/overview.png)
+
 ## Install (on the validator host)
 
 Requirements: Linux with systemd, git and Python 3.9+ (Ubuntu 22.04+ and Debian 11+ have Python and systemd). Replace `USER` with your login on the server and `NODE` with its address.
@@ -73,6 +75,26 @@ python3 -m venv .venv
 ```
 
 Settings are stored in `config.json` (created on first run). You can change them from the **Settings** button on the page or by editing the file. Changes made on the page apply right away; edits to the file take effect after a restart.
+
+## Screenshots
+
+*The screenshots use demo data: made-up pool names and documentation-only IP addresses.*
+
+**NEAR node:** startup host checks, sync status, service log warnings and errors, block rate, lag, peers and P2P traffic.
+
+![NEAR node section](docs/screenshots/node.png)
+
+**Validator:** block, chunk and endorsement production, stake vs seat price, epoch progress, and the other validators on your shard.
+
+![Validator section](docs/screenshots/validator.png)
+
+**Peers:** each peer's validator stats, connection time, ping, jitter, packet loss and a trend line.
+
+![Peers table](docs/screenshots/peers.png)
+
+**Settings:** what to collect, how often, the RPC endpoint, the log source and more.
+
+![Settings dialog](docs/screenshots/settings.png)
 
 ## What it collects
 

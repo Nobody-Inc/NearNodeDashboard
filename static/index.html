@@ -433,6 +433,18 @@ function fmtBytes(v, d = 1) {
   while (x >= 1024 && i < u.length - 1) { x /= 1024; i++; }
   return (v < 0 ? "-" : "") + x.toFixed(i === 0 ? 0 : d) + " " + u[i];
 }
+// Axis labels for byte values: one unit for the whole axis, with just enough decimals that
+// neighbouring gridlines never show the same label (e.g. 2.04 / 2.06 / 2.08 TB, not 2 / 2 / 2 TB).
+function fmtBytesAxis(v, ticks) {
+  if (!isNum(v)) return "—";
+  const vals = (ticks || []).map(t => t.value).filter(isNum);
+  const top = Math.max(1, ...vals.map(Math.abs), Math.abs(v));
+  const u = ["B", "KB", "MB", "GB", "TB", "PB"]; let i = 0, div = 1;
+  while (top / div >= 1024 && i < u.length - 1) { div *= 1024; i++; }
+  const step = vals.length > 1 ? Math.abs(vals[1] - vals[0]) / div : 1;
+  const d = !step || step >= 1 ? 0 : Math.min(3, Math.ceil(-Math.log10(step) - 1e-9));
+  return (v / div).toFixed(d) + " " + u[i];
+}
 const fmtRate = v => isNum(v) ? fmtBytes(v) + "/s" : "—";
 const fmtPct = (v, d = 1) => isNum(v) ? v.toFixed(d) + "%" : "—";
 function fmtNum(v, d = 0) {
@@ -545,7 +557,7 @@ function card(def) {
         x: { type: "linear", grid: { display: false }, border: {}, ticks: { maxTicksLimit: 6, maxRotation: 0 } },
         y: { min: def.yMin, max: def.yMax, beginAtZero: def.beginAtZero !== false, grace: def.grace ?? "5%",
              border: { display: false },
-             ticks: { maxTicksLimit: 5, stepSize: def.stepSize, callback: v => (def.axisFmt || def.fmt)(v) } },
+             ticks: { maxTicksLimit: 5, stepSize: def.stepSize, callback: (v, i, ticks) => (def.axisFmt || def.fmt)(v, ticks) } },
       },
     },
     plugins: [crosshair],
@@ -635,12 +647,12 @@ card({ id: "cpu", group: "system", title: "CPU usage", src: "system", fmt: v => 
   series: [{ key: "cpu_pct", label: "System", color: "--s1" }, { key: "proc_cpu_pct", label: "neard", color: "--s2" }],
   subFn: src => { const l = lastOf(src.load1); return isNum(l) ? `load avg (1m) ${l.toFixed(2)}` : ""; },
   trend: (st, def) => trendHtml(st[0], def) });
-card({ id: "mem", group: "system", title: "Memory usage", src: "system", fmt: v => fmtBytes(v), axisFmt: v => fmtBytes(v, 0),
+card({ id: "mem", group: "system", title: "Memory usage", src: "system", fmt: v => fmtBytes(v), axisFmt: fmtBytesAxis,
   series: [{ key: "mem_used", label: "System used", color: "--s1" }, { key: "proc_rss", label: "neard RSS", color: "--s2" }],
   headline: (st, src) => fmtPct(lastOf(src.mem_pct)),
   subFn: src => { const t = lastOf(src.mem_total), sw = lastOf(src.swap_pct); return isNum(t) ? `of ${fmtBytes(t)} · swap ${fmtPct(sw)}` : ""; },
   trend: (st, def) => trendHtml(st[0], def) });
-card({ id: "disk", group: "system", title: "Disk usage", src: "system", fmt: v => fmtBytes(v), axisFmt: v => fmtBytes(v, 0), beginAtZero: false,
+card({ id: "disk", group: "system", title: "Disk usage", src: "system", fmt: v => fmtBytes(v), axisFmt: fmtBytesAxis, beginAtZero: false,
   series: [{ key: "disk_used", label: "Used", color: "--s1" }],
   headline: (st, src) => fmtPct(lastOf(src.disk_pct)),
   subFn: src => { const t = lastOf(src.disk_total); return isNum(t) ? `${config?.disk_path || ""} · ${fmtBytes(t)} total` : ""; },
@@ -651,7 +663,7 @@ card({ id: "disk", group: "system", title: "Disk usage", src: "system", fmt: v =
     if (s.slope > 0 && isNum(total)) extra = `full in ~${fmtDur((total - s.last) / s.slope * 3600)}`;
     return trendHtml(s, def, { extra });
   } });
-card({ id: "diskio", group: "system", title: "Disk I/O", src: "system", fmt: fmtRate, axisFmt: v => fmtBytes(v, 0),
+card({ id: "diskio", group: "system", title: "Disk I/O", src: "system", fmt: fmtRate, axisFmt: fmtBytesAxis,
   series: [{ key: "disk_read_bps", label: "Read", color: "--s1" }, { key: "disk_write_bps", label: "Write", color: "--s2" }],
   headline: (st) => fmtRate((st[0]?.last || 0) + (st[1]?.last || 0)),
   trend: (st, def) => `<span>read avg ${fmtRate(st[0]?.avg)}</span><span>write avg ${fmtRate(st[1]?.avg)}</span><span>peak ${fmtRate(Math.max(st[0]?.max || 0, st[1]?.max || 0))}</span>` });
@@ -664,7 +676,7 @@ card({ id: "uptime-sys", group: "system", title: "System uptime", sub: "Time sin
     return `<span>${n === 0 ? "no reboots" : `<b>${n} reboot${n === 1 ? "" : "s"}</b>`} in range</span>` +
       (st[0] ? `<span>longest ${fmtUptime(st[0].max)}</span>` : "");
   } });
-card({ id: "net", group: "system", title: "Network (host)", src: "system", fmt: fmtRate, axisFmt: v => fmtBytes(v, 0),
+card({ id: "net", group: "system", title: "Network (host)", src: "system", fmt: fmtRate, axisFmt: fmtBytesAxis,
   series: [{ key: "net_recv_bps", label: "In", color: "--s1" }, { key: "net_sent_bps", label: "Out", color: "--s2" }],
   headline: (st) => fmtRate((st[0]?.last || 0) + (st[1]?.last || 0)),
   trend: (st) => `<span>in avg ${fmtRate(st[0]?.avg)}</span><span>out avg ${fmtRate(st[1]?.avg)}</span><span>peak ${fmtRate(Math.max(st[0]?.max || 0, st[1]?.max || 0))}</span>` });
@@ -722,7 +734,7 @@ card({ id: "lag", group: "node", title: "Block lag", sub: "Time since the node's
 card({ id: "peers", group: "node", title: "Active peers", src: "near", fmt: v => fmtNum(v, 0),
   series: [{ key: "peers", label: "Peers", color: "--s1" }],
   subFn: src => { const m = lastOf(src.max_peers); return isNum(m) ? `max ${m}` : ""; } });
-card({ id: "p2p", group: "node", title: "NEAR P2P traffic", sub: "As reported by /network_info", src: "near", fmt: fmtRate, axisFmt: v => fmtBytes(v, 0),
+card({ id: "p2p", group: "node", title: "NEAR P2P traffic", sub: "As reported by /network_info", src: "near", fmt: fmtRate, axisFmt: fmtBytesAxis,
   series: [{ key: "near_recv_bps", label: "Received", color: "--s1" }, { key: "near_sent_bps", label: "Sent", color: "--s2" }],
   headline: (st) => fmtRate((st[0]?.last || 0) + (st[1]?.last || 0)),
   trend: (st) => `<span>recv avg ${fmtRate(st[0]?.avg)}</span><span>sent avg ${fmtRate(st[1]?.avg)}</span>` });

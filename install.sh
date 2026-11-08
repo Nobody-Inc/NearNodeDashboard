@@ -198,11 +198,11 @@ fi
 say "Installing files into $INSTALL_DIR"
 if [ "$DRY_RUN" = 1 ]; then
   run "find $INSTALL_DIR -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf -- {} +"
-  run "tar -C $SRC_DIR --exclude=./.venv --exclude=./data --exclude=__pycache__ --exclude=./config.json --exclude=./.git -cf - . | tar -C $INSTALL_DIR --no-same-owner -xf -"
+  run "tar -C $SRC_DIR --exclude=./.venv --exclude=./data --exclude=__pycache__ --exclude=./config.json --exclude=./.git --exclude=./docs -cf - . | tar -C $INSTALL_DIR --no-same-owner -xf -"
 else
   find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 ! -name data -exec rm -rf -- {} +
   tar -C "$SRC_DIR" --exclude=./.venv --exclude=./data --exclude=__pycache__ \
-      --exclude=./config.json --exclude=./.git -cf - . | tar -C "$INSTALL_DIR" --no-same-owner -xf -
+      --exclude=./config.json --exclude=./.git --exclude=./docs -cf - . | tar -C "$INSTALL_DIR" --no-same-owner -xf -
 fi
 
 say "Setting up the Python environment"
