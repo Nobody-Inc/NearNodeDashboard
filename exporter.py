@@ -115,6 +115,10 @@ def build_snapshot(base):
             "ntp_synced": S("ntp_synced"), "temperature_max_celsius": S("temp_max_c"),
             "failed_logins_1h": S_sum("failed_logins"), "log_errors_1h": S_sum("sys_log_errors"),
             "log_warnings_1h": S_sum("sys_log_warnings"),
+            "gateway_ping_seconds": None if S("gateway_rtt_ms") is None else S("gateway_rtt_ms") / 1000,
+            "gateway_loss_ratio": pct(S("gateway_loss_pct")),
+            "dns_server_seconds": None if S("dns_server_ms") is None else S("dns_server_ms") / 1000,
+            "dns_server_fail_ratio": pct(S("dns_server_fail_pct")),
         },
         "filesystems": [{"mount": f.get("mount"), "fstype": f.get("fstype"), "used_bytes": f.get("used"),
                          "size_bytes": f.get("total"), "used_ratio": pct(f.get("pct")),
@@ -122,7 +126,7 @@ def build_snapshot(base):
         "alerts": [{k: a.get(k) for k in ("id", "severity", "title", "detail", "since")} for a in latest.get("alerts") or []],
         "checks": {k: {kk: vv for kk, vv in v.items() if kk in ("status", "detail", "offset_ms", "synced", "ms", "security",
                                                                  "total", "reboot_required", "unexpected", "drives",
-                                                                 "virtual", "kind", "type")}
+                                                                 "virtual", "kind", "type", "targets")}
                    for k, v in (health.get("checks") or {}).items()},
         "node_status": {
             "rpc_up": None if not has_near else 0 if latest.get("error") else 1, "rpc_error": latest.get("error"),
@@ -268,7 +272,9 @@ def prometheus(snap, meta, per_peer=False):
         "file_handles_ratio": "Open file handles vs the system limit (0-1)", "clock_offset_seconds": "System clock offset from NTP",
         "ntp_synced": "1 if the clock is NTP-synchronised", "temperature_max_celsius": "Hottest hardware sensor",
         "failed_logins_1h": "Failed SSH logins in the last hour", "log_errors_1h": "System journal errors in the last hour",
-        "log_warnings_1h": "System journal warnings in the last hour"}
+        "log_warnings_1h": "System journal warnings in the last hour",
+        "gateway_ping_seconds": "Average ping to the default gateway", "gateway_loss_ratio": "Share of pings to the gateway lost (0-1)",
+        "dns_server_seconds": "Slowest DNS server's answer time", "dns_server_fail_ratio": "Share of DNS servers not answering (0-1)"}
     for key, help_ in extra_help.items():
         g("system_" + key, s.get(key), help_)
     for f in snap.get("filesystems", []):
@@ -287,6 +293,12 @@ def prometheus(snap, meta, per_peer=False):
     for d in drives:
         if d.get("passed") is not None:
             g("smart_healthy", int(bool(d["passed"])), "1 if a drive's SMART self-assessment passed", {"device": d.get("device") or ""})
+    for t in (ck.get("network") or {}).get("targets") or []:
+        if t.get("ok") is not None:
+            lab = {"kind": t.get("kind") or "", "target": t.get("ip") or ""}
+            g("network_target_up", int(bool(t["ok"])), "1 if the default gateway / DNS server answered its last test", lab)
+            if isinstance(t.get("rtt_ms"), (int, float)):
+                g("network_target_rtt_seconds", t["rtt_ms"] / 1000, "Gateway ping or DNS server answer time", lab)
     virt = ck.get("virtualization") or {}
     if virt.get("virtual") is not None:
         g("system_virtualized", int(bool(virt["virtual"])), "1 if the server is a virtual machine or container "

@@ -28,6 +28,8 @@ SYSTEM_COLS = [
     "tcp_established", "tcp_time_wait", "tcp_close_wait", "tcp_total", "dns_ms", "dns_ok",
     "proc_count", "proc_zombies", "fd_used", "fd_max", "fd_pct", "clock_offset_ms", "ntp_synced", "temp_max_c",
     "failed_logins", "sys_log_errors", "sys_log_warnings",
+    # network path (checks.HealthMonitor -> netpath): default gateway and DNS servers
+    "gateway_rtt_ms", "gateway_loss_pct", "dns_server_ms", "dns_server_fail_pct",
 ]
 
 
@@ -40,10 +42,15 @@ class SystemModule(Module):
         # Process whose CPU and memory are tracked separately (e.g. the NEAR client).
         "process_name": Setting("neard", text),
         "collect_system": Setting(True, boolean),
-        # Slower health/security checks: DNS, clock, logins, log rates, SMART, patches, IPMI.
+        # Slower health/security checks: DNS, gateway/DNS servers, clock, logins, log rates, SMART,
+        # patches, IPMI.
         "collect_health": Setting(True, boolean),
-        # Hostname whose DNS resolution time is measured (every minute).
+        # Hostname whose DNS resolution time is measured, and that each DNS server is asked for
+        # (every minute).
         "dns_check_host": Setting("near.org", hostname),
+        # When the gateway or a DNS server fails its test, trace the path to it with mtr (at most
+        # every 10 minutes per target; needs the mtr or mtr-tiny package).
+        "mtr_on_failure": Setting(True, boolean),
         # Use `sudo -n` for SMART (smartctl) and IPMI (ipmitool). Only with passwordless sudo for
         # those commands; otherwise every attempt is logged as a failed sudo login.
         "health_checks_sudo": Setting(False, boolean),
@@ -51,7 +58,7 @@ class SystemModule(Module):
     series = {"system": SYSTEM_COLS}
     aggregations = {**{c: "MAX" for c in ("disk_total", "mem_total", "uptime_sec", "boot_time", "cpu_cores", "fd_max",
                                           "fs_max_pct", "inode_max_pct", "temp_max_c", "proc_zombies")},
-                    "dns_ok": "MIN", "ntp_synced": "MIN",
+                    "dns_ok": "MIN", "ntp_synced": "MIN", "dns_server_fail_pct": "MAX",
                     # event counts: a bucket's value is the total within it
                     **{c: "SUM" for c in ("oom_kills", "failed_logins", "sys_log_errors", "sys_log_warnings")}}
     retention = ["DELETE FROM system WHERE ts < ?"]
@@ -152,6 +159,26 @@ class SystemModule(Module):
                     f"System clock is off by {c['offset_ms']:+.0f} ms.")
             if (r.get("dns") or {}).get("status") == "warn":
                 add("dns", "warning", "DNS resolution is failing or slow", r["dns"].get("detail", ""))
+            # Gateway and DNS servers: sustained over a few checks (one dropped ping round doesn't alert).
+            win = max(180, 3 * ctx.app.config.interval)
+            net = r.get("network") or {}
+            trace = " An mtr trace is in Health & security." if net.get("traces") else ""
+            # MIN over the window: every check in it had (at least) this much loss.
+            gw = ctx.window("system", ["gateway_loss_pct"], win, "MIN")["gateway_loss_pct"]
+            if gw is not None and gw >= 100:
+                add("gateway_down", "critical", "Default gateway not responding",
+                    f"No ping replies from the gateway for {win // 60:.0f}+ minutes." + trace)
+            elif gw is not None and gw > 0:
+                add("gateway_loss", "warning", "Packet loss to the default gateway",
+                    f"Pings to the gateway have been losing packets (at least {gw:.0f}%) for {win // 60:.0f}+ minutes." + trace)
+            dns_fail = ctx.window("system", ["dns_server_fail_pct"], win, "MIN")["dns_server_fail_pct"]
+            if dns_fail is not None and dns_fail >= 100:
+                add("dns_servers_down", "critical", "DNS servers not answering",
+                    "None of the configured DNS servers has answered for a few minutes." + trace)
+            elif dns_fail is not None and dns_fail > 0:
+                bad = [t["ip"] for t in net.get("targets", []) if t.get("kind") == "dns" and not t.get("ok")]
+                add("dns_server_down", "warning", "A DNS server isn't answering",
+                    (f"Not answering: {', '.join(bad)}." if bad else "One or more DNS servers aren't answering.") + trace)
             if (r.get("smart") or {}).get("status") == "fail":
                 add("smart", "critical", "A drive is failing (SMART)", r["smart"].get("detail", ""))
             if (r.get("ipmi") or {}).get("status") == "fail":

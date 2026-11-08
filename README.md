@@ -170,6 +170,8 @@ The **System** section is organised by the USE method (Utilization, Saturation, 
 
 The **Health & security** section covers uptime and unexpected reboots, processes and zombies, open file handles, clock drift (NTP), temperatures, fans and power supplies, DNS resolution time, failed SSH logins, system log error/warning rates and pending security updates.
 
+**Gateway and DNS servers** are tested every minute: the default gateway (IPv4 and IPv6) is pinged, and every DNS server in `/etc/resolv.conf` (plus systemd-resolved's upstream servers) gets a real DNS query for `dns_check_host`, sent straight to it, so a dead server can't hide behind a working one. Each appears as a row in the health table, and gateway ping and DNS server answer time are charted under Network. When one fails, the dashboard runs **mtr** to it (at most every 10 minutes per target) and shows the trace under *Network traces* for 6 hours, so you can see where packets stop. Install it with `sudo apt install mtr-tiny`. Alerts fire when the gateway stops answering or keeps losing pings, or when one or all DNS servers stop answering, sustained for 3 minutes.
+
 On a **virtual machine or container** (detected at startup with `systemd-detect-virt`, the CPU's hypervisor flag or the DMI product name), the hardware checks are skipped: SMART, temperatures, fans and power supplies (IPMI) aren't visible from inside a VM. The health table shows a *Virtualization* row saying which was detected, and the exporter publishes it as `near_node_system_virtualized`.
 
 The **NEAR node** section starts with RED tiles for neard: **Rate** (blocks/s), **Errors** (missed blocks/chunks/endorsements, RPC failures) and **Duration** (block lag, RPC latency).
@@ -185,14 +187,15 @@ The **NEAR node** section starts with RED tiles for neard: **Rate** (blocks/s), 
 - high CPU steal or iowait, or CPU saturated for 10 minutes;
 - file handles running out, hot hardware, a failing drive, PSU or fan;
 - the clock not NTP-synced or drifting;
-- DNS failing;
+- DNS failing, the default gateway not answering or losing pings, a DNS server not answering;
 - an unexpected last reboot;
 - many failed logins;
 - pending security updates (info).
 
-Cheap metrics are sampled with every collection; slower checks run on their own schedule (DNS every minute; clock, logins, log rates and IPMI every 5 minutes; SMART and updates every 6 hours), so 1s mode doesn't hammer them. Most of these are Linux-only and show "—" elsewhere. Optional extras (physical servers only):
+Cheap metrics are sampled with every collection; slower checks run on their own schedule (DNS, gateway and DNS servers every minute; clock, logins, log rates and IPMI every 5 minutes; SMART and updates every 6 hours), so 1s mode doesn't hammer them. Most of these are Linux-only and show "—" elsewhere. Optional extras (physical servers only):
 - **SMART:** `sudo apt install smartmontools`. Reading drives needs root, so either run as root or give the service user passwordless sudo for `smartctl` and turn on `health_checks_sudo`.
 - **Power supplies and fans:** `ipmitool` on servers with a BMC (same root/sudo note).
+- **Route traces on gateway/DNS failures:** `sudo apt install mtr-tiny` (any server, VM or physical).
 - **Unexpected-reboot detection:** a persistent journal (`sudo mkdir -p /var/log/journal`).
 
 ## Configuration (`config.json`)
@@ -218,7 +221,8 @@ Cheap metrics are sampled with every collection; slower checks run on their own 
 | `firewall_check_sudo` | `false` | Read firewall rules with `sudo -n` when not root. Only enable it if the service user has passwordless sudo for `ufw`/`iptables`/`nft`/`firewall-cmd`; otherwise each attempt is logged as a failed sudo authentication |
 | `read_only` | `true` | Lock the settings: when `true` (the default), nothing can be changed from the web page (the Settings dialog becomes view-only and 1s mode is locked), and the page shows a warning. It can only be set by editing `config.json` on the server, and takes effect when the dashboard restarts |
 | `collect_health` | `true` | Run the slower health and security checks (DNS, clock, failed logins, system log rates, SMART, updates, IPMI) |
-| `dns_check_host` | `near.org` | Hostname resolved every minute to measure DNS time |
+| `dns_check_host` | `near.org` | Hostname resolved every minute to measure DNS time, and asked of each DNS server in the gateway/DNS server test |
+| `mtr_on_failure` | `true` | When the gateway or a DNS server fails its test, trace the route to it with `mtr` (at most every 10 minutes per target; needs the `mtr` or `mtr-tiny` package) |
 | `health_checks_sudo` | `false` | Use `sudo -n` for SMART and IPMI checks. Only enable with passwordless sudo for `smartctl`/`ipmitool`; otherwise each attempt is logged as a failed sudo login |
 | `ping_enabled` | `true` | Ping every active peer once per round |
 | `ping_method` | `icmp` | `icmp` uses the system `ping` command. `tcp` times a TCP connection to the peer's NEAR port (24567), which works when a peer blocks ICMP |

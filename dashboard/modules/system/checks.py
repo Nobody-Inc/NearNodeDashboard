@@ -1,6 +1,6 @@
-"""Slower host health and security checks, each on its own schedule: DNS, clock/NTP, failed
-logins and system log rates (journal), SMART, pending security updates, IPMI power
-supplies and fans, and whether the last reboot was clean."""
+"""Slower host health and security checks, each on its own schedule: DNS, clock/NTP, gateway and
+DNS server reachability (netpath), failed logins and system log rates (journal), SMART, pending
+security updates, IPMI power supplies and fans, and whether the last reboot was clean."""
 
 import json
 import os
@@ -12,6 +12,8 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+
+from dashboard.modules.system.netpath import NetworkPath
 
 
 def run_cmd(cmd, timeout=20, use_sudo=False):
@@ -264,7 +266,7 @@ class HealthMonitor:
     Gauges (DNS, clock) are carried into every system sample; counts (failed logins, system log
     errors/warnings) are handed to the next sample once, so bucket sums are correct."""
 
-    SCHEDULE = {"dns": 60, "clock": 300, "logs": 300, "ipmi": 300, "smart": 21600, "patches": 21600}
+    SCHEDULE = {"dns": 60, "network": 60, "clock": 300, "logs": 300, "ipmi": 300, "smart": 21600, "patches": 21600}
 
     def __init__(self, config, on_change=None, virtualization=None):
         self.config = config
@@ -278,6 +280,7 @@ class HealthMonitor:
         self.pending = {}
         self.logs_since = time.time()
         self.gauges = {}
+        self.netpath = NetworkPath()
 
     def _set(self, name, value):
         value["checked_at"] = time.time()
@@ -302,6 +305,11 @@ class HealthMonitor:
             self.gauges.update(dns_ms=ms, dns_ok=1 if ok else 0)
             self._set("dns", {"status": "pass" if ok and ms < 500 else "warn", "host": host, "ms": ms,
                               "detail": f"{host} resolved in {ms:.0f} ms" if ok else f"{host} failed to resolve: {err}"})
+        elif name == "network":
+            result, gauges = self.netpath.run(self.config.get("dns_check_host") or "near.org",
+                                              run_mtr=bool(self.config.get("mtr_on_failure")))
+            self.gauges.update(gauges)
+            self._set("network", result)
         elif name == "clock":
             res = clock_status()
             self.gauges.update(clock_offset_ms=res.get("offset_ms"),

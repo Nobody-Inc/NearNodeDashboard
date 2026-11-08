@@ -94,6 +94,16 @@ card({ id: "tcp", group: "net", title: "TCP connections", sub: "Sockets by state
 card({ id: "dns", group: "net", title: "DNS resolution time", sub: "Lookup through the system resolver (cached answers are fast)",
   src: "system", fmt: fmtMs1, series: [{ key: "dns_ms", label: "Lookup", color: "--s1" }],
   subFn: src => { const ok = lastOf(src.dns_ok); return ok === 0 ? "✕ last lookup failed" : ""; } });
+card({ id: "netpath", group: "net", title: "Gateway & DNS servers",
+  sub: "Ping to the default gateway, and the slowest DNS server's answer (every minute)",
+  src: "system", fmt: fmtMs1, series: [{ key: "gateway_rtt_ms", label: "Gateway ping", color: "--s1" },
+                                       { key: "dns_server_ms", label: "DNS server", color: "--s2" }],
+  trend: (st, def, src) => {
+    const loss = (src.gateway_loss_pct || []).filter(isNum), fail = (src.dns_server_fail_pct || []).filter(isNum);
+    const avgLoss = loss.length ? loss.reduce((a, b) => a + b, 0) / loss.length : null;
+    return `<span>gateway loss ${isNum(avgLoss) ? fmtPct(avgLoss, 1) : "—"} avg</span>` +
+      `<span>DNS server failures ${fail.length ? (fail.some(v => v > 0) ? `<b>${fail.filter(v => v > 0).length} bucket(s)</b>` : "none") : "—"}</span>`;
+  } });
 card({ id: "procs", group: "health", title: "Processes", src: "system", fmt: v => isNum(v) ? fmtNum(v, 0) : "—",
   series: [{ key: "proc_count", label: "Processes", color: "--s1" }],
   trend: (st, def, src) => `<span>zombies ${fmtNum(lastOf(src.proc_zombies))}</span>` + (st[0] ? `<span>avg ${def.fmt(st[0].avg)}</span><span>max ${def.fmt(st[0].max)}</span>` : "") });
@@ -162,6 +172,18 @@ function renderHealth() {
   if (ck.last_boot) row("Last reboot", ck.last_boot.status, isNum(L("uptime_sec")) ? `up ${fmtUptime(L("uptime_sec"))}` : "—", ck.last_boot.detail);
   if (ck.clock) row("Clock (NTP)", ck.clock.status, isNum(ck.clock.offset_ms) ? `${ck.clock.offset_ms >= 0 ? "+" : ""}${fmtMs1(ck.clock.offset_ms)}` : "—", ck.clock.detail);
   if (ck.dns) row("DNS", ck.dns.status, fmtMs1(ck.dns.ms), ck.dns.detail);
+  const net = ck.network;
+  if (net) {
+    for (const t of net.targets || []) {
+      const name = t.kind === "gateway" ? `Gateway ${t.ip}` + (t.iface ? ` (${t.iface})` : "") : `DNS server ${t.ip}`;
+      const value = t.kind === "gateway"
+        ? (isNum(t.loss_pct) ? (t.loss_pct >= 100 ? "no replies" : `${fmtMs1(t.rtt_ms)} · ${fmtPct(t.loss_pct, 0)} loss`) : "—")
+        : (t.ok ? fmtMs1(t.rtt_ms) : "no answer");
+      row(name, t.status, value, t.detail);
+    }
+    if (!(net.targets || []).length) row("Gateway & DNS servers", net.status, "—", net.detail);
+  }
+  renderTraces(net?.traces || []);
   if (ck.smart && !isVirtual) {
     if ((ck.smart.drives || []).length) for (const d of ck.smart.drives)
       row(`SMART ${d.device}`, d.passed === true ? "pass" : d.passed === false ? "fail" : "na",
@@ -180,6 +202,22 @@ function renderHealth() {
   if (ck.patches) row("Security updates", ck.patches.status, isNum(ck.patches.security) ? String(ck.patches.security) : "—", ck.patches.detail);
   if (ck.logs) row("Journal (logins, log rates)", ck.logs.status, "—", ck.logs.detail);
   document.querySelector("#healthTable tbody").innerHTML = rows.join("") || `<tr><td colspan="4" class="muted">${config?.collect_health === false ? "Health checks are turned off (Settings → Data collection)." : "Running checks…"}</td></tr>`;
+}
+
+// mtr traces, run when the gateway or a DNS server failed its test (newest first).
+function renderTraces(traces) {
+  const box = document.getElementById("netTraces");
+  if (!box) return;
+  box.hidden = !traces.length;
+  const key = JSON.stringify(traces.map(t => [t.ip, t.at]));
+  if (box.dataset.key === key) return;   // unchanged: keep open/closed state
+  box.dataset.key = key;
+  const now = Date.now() / 1000;
+  box.querySelector("[data-list]").innerHTML = traces.map(t => `<details>
+      <summary><span class="mono">${esc(t.ip)}</span> · ${t.kind === "gateway" ? "gateway" : "DNS server"} ·
+        ${esc(new Date(t.at * 1000).toLocaleString())} (${fmtDur(Math.max(0, now - t.at))} ago) ·
+        <span class="muted">${esc(t.reason || "")}</span></summary>
+      <pre class="trace">${esc(t.output || "")}</pre></details>`).join("");
 }
 
 // ---------------------------------------------------------------- registration

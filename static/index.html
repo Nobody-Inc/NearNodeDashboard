@@ -173,6 +173,10 @@ dialog h3 { margin: 0 0 14px; font-size: 16px; }
 .peers-bar input[type=search] { font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--axis);
   background: var(--surface); color: var(--text); width: min(280px, 100%); }
 .peers-bar .count { color: var(--text-2); font-size: 13px; margin-left: auto; }
+.traces details { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; margin: 8px 0; }
+.traces summary { cursor: pointer; font-size: 13px; }
+.traces pre.trace { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.45;
+  margin: 8px 0 2px; overflow-x: auto; white-space: pre; }
 .table-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
@@ -262,6 +266,10 @@ tr.gone:hover td { opacity: 0.85; }
           <thead><tr><th>Check</th><th>Status</th><th>Value</th><th>Details</th></tr></thead>
           <tbody><tr><td colspan="4" class="muted">Loading…</td></tr></tbody>
         </table>
+      </div>
+      <div class="traces" id="netTraces" hidden>
+        <h3 class="sub-h">Network traces <span class="card-s">mtr, run when the gateway or a DNS server failed (kept 6 h)</span></h3>
+        <div data-list></div>
       </div>
       <div class="grid" id="g-health"></div>
       <h3 class="sub-h">Security &amp; logs</h3>
@@ -394,7 +402,7 @@ tr.gone:hover td { opacity: 0.85; }
       <label data-module="near"><input type="checkbox" name="collect_validator"><span>Validator<small>validators RPC; also feeds the shard table</small></span></label>
       <label data-module="near"><input type="checkbox" name="collect_peers"><span>Peers<small>peer tracking, churn and pings</small></span></label>
       <label data-module="near"><input type="checkbox" name="collect_logs"><span>Service log<small>WARN / ERROR lines from neard</small></span></label>
-      <label data-module="system"><input type="checkbox" name="collect_health"><span>Health &amp; security<small>DNS, clock, logins, log rates, SMART, patches</small></span></label>
+      <label data-module="system"><input type="checkbox" name="collect_health"><span>Health &amp; security<small>DNS, gateway &amp; DNS servers, clock, logins, log rates, SMART, patches</small></span></label>
     </fieldset>
     <div class="row2" data-module="near">
       <div class="field" data-module="near">
@@ -474,6 +482,11 @@ tr.gone:hover td { opacity: 0.85; }
       <label for="c-dns">DNS check host</label>
       <input type="text" id="c-dns" name="dns_check_host" placeholder="near.org">
       <small>Resolved every minute to measure DNS time.</small>
+    </div>
+    <div class="field" data-module="system">
+      <label><input type="checkbox" name="mtr_on_failure"> Trace the route (mtr) when the gateway or a DNS server fails</label>
+      <small>Gateway and DNS servers are tested every minute. A failing one gets an mtr trace, at most every 10 minutes
+        (needs the mtr or mtr-tiny package).</small>
     </div>
     <div class="field" data-module="system">
       <label><input type="checkbox" name="health_checks_sudo"> Use passwordless sudo for SMART and IPMI checks</label>
