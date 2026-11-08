@@ -232,11 +232,23 @@ if command -v git >/dev/null && git -c safe.directory="$SRC_DIR" -C "$SRC_DIR" r
   G="git -c safe.directory=$SRC_DIR -C $SRC_DIR"
   COMMIT="$($G log -1 --format=%h)"; CDATE="$($G log -1 --format=%cs)"
   MODIFIED=false; [ -n "$($G status --porcelain --untracked-files=no)" ] && MODIFIED=true
-  say "Installing commit $COMMIT ($CDATE)$([ "$MODIFIED" = true ] && echo ' with local changes')"
-  if [ "$DRY_RUN" = 1 ]; then
-    run "write $INSTALL_DIR/VERSION.json (commit $COMMIT, $CDATE)"
+  # Version = latest release tag vX.Y.Z this commit descends from, plus how many commits past it.
+  DESC="$($G describe --tags --long --match 'v[0-9]*' 2>/dev/null || true)"
+  if [[ "$DESC" =~ ^v([0-9][0-9A-Za-z.+-]{0,40})-([0-9]+)-g[0-9a-f]+$ ]]; then
+    VERSION="${BASH_REMATCH[1]}"; DISTANCE="${BASH_REMATCH[2]}"
+    # (an if, not `$([ ... ] && echo)`: under set -e a failing substitution in an assignment exits)
+    VLABEL="v$VERSION"
+    if [ "$DISTANCE" != 0 ]; then VLABEL="$VLABEL+$DISTANCE"; fi
+    VJSON="\"version\": \"$VERSION\", \"distance\": $DISTANCE, "
   else
-    printf '{"commit": "%s", "date": "%s", "modified": %s}\n' "$COMMIT" "$CDATE" "$MODIFIED" > "$INSTALL_DIR/VERSION.json"
+    VLABEL="untagged"; VJSON=""
+    warn "no release tag (vX.Y.Z) found; the footer will show the fallback version and the commit"
+  fi
+  say "Installing $VLABEL, commit $COMMIT ($CDATE)$([ "$MODIFIED" = true ] && echo ' with local changes')"
+  if [ "$DRY_RUN" = 1 ]; then
+    run "write $INSTALL_DIR/VERSION.json ($VLABEL, commit $COMMIT, $CDATE)"
+  else
+    printf '{%s"commit": "%s", "date": "%s", "modified": %s}\n' "$VJSON" "$COMMIT" "$CDATE" "$MODIFIED" > "$INSTALL_DIR/VERSION.json"
   fi
 else
   warn "not installing from a git clone; the footer won't show which commit is installed"

@@ -1042,7 +1042,9 @@ function renderVersion(v) {
     ? ` · <a href="${esc(v.repo)}/commit/${esc(v.commit)}" target="_blank" rel="noopener">${esc(v.commit)}</a>` +
       (v.date ? ` (${esc(v.date)})` : "") + (v.modified ? " + local changes" : "")
     : "";
-  el.innerHTML = `v${esc(v.version)}${commit}`;
+  const past = isNum(v.distance) && v.distance > 0
+    ? `<span title="${esc(v.distance)} commit(s) after the v${esc(v.version)} release">+${esc(v.distance)}</span>` : "";
+  el.innerHTML = `v${esc(v.version)}${past}${commit}`;
   document.getElementById("appVersionSep").hidden = false;
 }
 

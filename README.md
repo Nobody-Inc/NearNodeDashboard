@@ -102,7 +102,16 @@ Example Prometheus job:
 
 ### Which version is installed
 
-The page footer shows the dashboard version and the git commit it was installed from, e.g. `v1.0.0 · 7d3d68e (2026-11-08)`. The commit links to GitHub, so you can compare it with the latest commit there. The exporter publishes the same as `near_node_dashboard_info`.
+The page footer shows the release and the git commit the dashboard was installed from, e.g. `v1.1.0 · d7a37cc (2026-11-08)`. The commit links to GitHub, so you can compare it with the latest there. The exporter publishes the same as `near_node_dashboard_info`.
+
+The version comes from the latest release tag (`vX.Y.Z`) the installed commit descends from. A build made after the latest tag shows how far past it is, e.g. `v1.1.0+3` means three commits after v1.1.0. With no tags (or no git), it falls back to `APP_VERSION` in `server.py`.
+
+**Making a release:** tag the commit and push the tag. Servers pick it up on their next `git pull && sudo ./install.sh` (`git pull` fetches new tags automatically).
+
+```bash
+git tag -a v1.2.0 -m "v1.2.0"
+git push origin v1.2.0
+```
 
 ### Running it on your own computer instead
 

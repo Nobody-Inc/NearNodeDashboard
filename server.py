@@ -33,6 +33,7 @@ import psutil
 import health
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Fallback only: the real version comes from the latest git tag vX.Y.Z (see version_info()).
 APP_VERSION = "1.0.0"
 REPO_URL = "https://github.com/Nobody-Inc/NearNodeDashboard"
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -401,25 +402,38 @@ class DBPool:
                 c.close()
 
 
+VERSION_TAG_RE = re.compile(r"^v([0-9][0-9A-Za-z.+-]{0,40})-(\d+)-g([0-9a-f]{4,40})$")
+
+
 def version_info():
-    """App version plus the git commit it was installed from. install.sh writes VERSION.json
-    (the install folder has no .git); a copy run straight from a git clone asks git."""
-    info = {"version": APP_VERSION, "commit": None, "date": None, "modified": False, "repo": REPO_URL}
+    """Version from the latest release tag (vX.Y.Z) the code descends from, plus the commit.
+
+    `distance` is how many commits the code is past that tag (0 = exactly the release).
+    install.sh writes VERSION.json (the install folder has no .git); a copy run straight from a git
+    clone asks git. APP_VERSION is only used when there's no git or no release tag."""
+    info = {"version": APP_VERSION, "distance": None, "tagged": False, "commit": None, "date": None,
+            "modified": False, "repo": REPO_URL}
     try:
         with open(os.path.join(BASE_DIR, "VERSION.json")) as f:
             data = json.load(f)
         info.update({k: data.get(k) for k in ("commit", "date", "modified") if k in data})
+        if isinstance(data.get("version"), str) and re.match(r"^[0-9][0-9A-Za-z.+-]{0,40}$", data["version"]):
+            info.update(version=data["version"], distance=data.get("distance"), tagged=True)
         return info
     except (OSError, ValueError):
         pass
+
+    def git(*args):
+        out = subprocess.run(["git", "-C", BASE_DIR, *args], capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() if out.returncode == 0 else ""
     try:
-        out = subprocess.run(["git", "-C", BASE_DIR, "log", "-1", "--format=%h %cs"], capture_output=True,
-                             text=True, timeout=5)
-        if out.returncode == 0 and out.stdout.strip():
-            info["commit"], info["date"] = out.stdout.split()[:2]
-            dirty = subprocess.run(["git", "-C", BASE_DIR, "status", "--porcelain", "--untracked-files=no"],
-                                   capture_output=True, text=True, timeout=5)
-            info["modified"] = bool(dirty.stdout.strip())
+        log = git("log", "-1", "--format=%h %cs")
+        if log:
+            info["commit"], info["date"] = log.split()[:2]
+            info["modified"] = bool(git("status", "--porcelain", "--untracked-files=no"))
+            m = VERSION_TAG_RE.match(git("describe", "--tags", "--long", "--match", "v[0-9]*"))
+            if m:
+                info.update(version=m.group(1), distance=int(m.group(2)), tagged=True)
     except (OSError, subprocess.SubprocessError, ValueError):
         pass
     return info
@@ -2457,7 +2471,8 @@ def main():
     threading.Thread(target=host_checks, daemon=True).start()
 
     server = make_server(args.host, args.port, make_handler(app, allowed_hosts(args.host, args.allow_host)))
-    print(f"Near Node Dashboard {APP_VERSION}"
+    print(f"Near Node Dashboard {VERSION_INFO['version']}"
+          + (f"+{VERSION_INFO['distance']}" if VERSION_INFO.get("distance") else "")
           + (f" ({VERSION_INFO['commit']}, {VERSION_INFO['date']})" if VERSION_INFO.get("commit") else "")
           + f" listening on {args.host}:{args.port}  "
           f"(interval {config.interval}s, retention {config.get('retention_hours')}h, rpc {config.get('rpc_url')})",
