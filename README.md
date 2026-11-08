@@ -68,6 +68,42 @@ Requests must address the server by IP, `localhost` or its own hostname. This bl
 `/opt/NearNodeDashboard/data/config.json` and run `sudo systemctl restart near-node-dashboard`. The page still works
 and shows its data; the Settings dialog becomes view-only and a warning explains how to unlock it.
 
+### Central monitoring (optional exporter)
+
+To feed several nodes into a central system, install the optional second service, the **exporter**:
+
+```bash
+sudo ./install.sh --with-exporter      # options: --exporter-port 9787 --exporter-listen 0.0.0.0
+```
+
+It reads the dashboard's local API on a schedule (every collection interval by default, min 15 s) and republishes one read-only snapshot on port 9787:
+
+| Endpoint | What it is |
+|---|---|
+| `/metrics` | Prometheus text format: system, node, validator, peer, log and host-check metrics, all labelled with `node` and `chain` |
+| `/api/v1/snapshot` | The same data as JSON |
+| `/` | Status page with **last updated** and a live **time to next update** countdown |
+| `/healthz` | `200` when the last read of the dashboard succeeded, `503` otherwise (no token needed) |
+
+Every response except `/healthz` requires the access token the installer generates, sent as `Authorization: Bearer <token>`, or `?token=<token>` in a browser. The installer prints the token at the end; to show it again, run `sudo cat /opt/NearNodeDashboard/data/exporter.token`. Allow only your central server through the firewall, e.g. `sudo ufw allow from CENTRAL_IP to any port 9787 proto tcp`.
+
+Example Prometheus job:
+
+```yaml
+- job_name: near-node
+  scrape_interval: 60s
+  authorization:
+    credentials: "<token>"
+  static_configs:
+    - targets: ["NODE:9787"]
+```
+
+`near_node_exporter_last_update_timestamp_seconds` and `near_node_exporter_next_update_timestamp_seconds` show how fresh the data is, so you can alert on stale data. Per-peer ping series are off by default (one series per peer); add `--per-peer` to the exporter's `ExecStart` line to enable them. Re-running the installer keeps the exporter; `--without-exporter` removes it.
+
+### Which version is installed
+
+The page footer shows the dashboard version and the git commit it was installed from, e.g. `v1.0.0 · 7d3d68e (2026-11-08)`. The commit links to GitHub, so you can compare it with the latest commit there. The exporter publishes the same as `near_node_dashboard_info`.
+
 ### Running it on your own computer instead
 
 ```bash
@@ -143,7 +179,7 @@ The server only answers requests addressed to `localhost`, this machine's hostna
 - In 1s mode the server calls `/status` every second and `/network_info` every 10 seconds. Public RPCs will rate-limit that (HTTP 429), so use 1s mode against your own node.
 - At 1s sampling, 24 hours is about 86k rows per table, which SQLite handles easily. The API averages samples into time buckets, so a chart never draws more than about 600 points.
 - The seat price shown is the lowest stake in the current active set.
-- `install.sh` sets the dashboard up as a systemd service. `near-node-dashboard.service` is an example unit file if you'd rather do it by hand.
+- `install.sh` sets the dashboard (and, with `--with-exporter`, the exporter) up as systemd services. `near-node-dashboard.service` is an example unit file if you'd rather do it by hand.
 - Peers that disconnect stay in the table, dimmed and marked "left Xm ago", for the selected time range, along with their last ping stats. Join and leave events are recorded in `peer_events` and shown in the **Peer churn** chart.
 - Public RPC URLs are usually load-balanced across several nodes, so each request may reach a different node. The page detects this (the node key in `/status` changes) and shows a warning, because the peers, churn, peer ping and sync stats would then mix data from several nodes. Point `rpc_url` at a single node for accurate peer data.
 - **neard version & protocol**: the network protocol version and the newest protocol your binary supports are charted on every sample. Each change of version, build or protocol is logged in `version_history`, which is never pruned.

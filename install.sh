@@ -10,6 +10,9 @@
 # Options: --user NAME (default nearnode)  --dir PATH (default /opt/NearNodeDashboard)
 #          --port N (default 8787)  --neard-unit NAME (default: detected, else neard.service)
 #          --listen ADDR (default 0.0.0.0 = all IPv4; '::' = all IPv4+IPv6; 127.0.0.1 = this host only)
+# Optional exporter (second service publishing the data for central scraping):
+#          --with-exporter  install it (kept on later upgrades)   --without-exporter  remove it
+#          --exporter-port N (default 9787)  --exporter-listen ADDR (default 0.0.0.0)
 set -euo pipefail
 
 SERVICE_NAME="near-node-dashboard"
@@ -23,6 +26,11 @@ UNINSTALL=0
 PURGE=0
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 UNIT_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
+EXPORTER_NAME="near-node-exporter"
+EXPORTER_UNIT="/etc/systemd/system/${EXPORTER_NAME}.service"
+EXPORTER="auto"          # auto = keep it if it's already installed
+EXPORTER_PORT="9787"
+EXPORTER_LISTEN="0.0.0.0"
 
 say()  { printf '\033[1m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mWARNING:\033[0m %s\n' "$*" >&2; }
@@ -30,7 +38,7 @@ die()  { printf '\033[31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 # Run a command, or just print it in --dry-run mode.
 run()  { if [ "$DRY_RUN" = 1 ]; then printf '    [dry-run] %s\n' "$*"; else "$@"; fi; }
 
-usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,6 +47,10 @@ while [ $# -gt 0 ]; do
     --port)       PORT="${2:?--port needs a number}"; shift 2 ;;
     --listen)     LISTEN="${2:?--listen needs an IP address}"; shift 2 ;;
     --neard-unit) NEARD_UNIT="${2:?--neard-unit needs a unit name}"; shift 2 ;;
+    --with-exporter)    EXPORTER=yes; shift ;;
+    --without-exporter) EXPORTER=no; shift ;;
+    --exporter-port)    EXPORTER_PORT="${2:?--exporter-port needs a number}"; shift 2 ;;
+    --exporter-listen)  EXPORTER_LISTEN="${2:?--exporter-listen needs an IP address}"; shift 2 ;;
     --dry-run)    DRY_RUN=1; shift ;;
     --uninstall)  UNINSTALL=1; shift ;;
     --purge)      PURGE=1; shift ;;
@@ -51,6 +63,10 @@ done
 [[ "$SERVICE_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || die "invalid user name: $SERVICE_USER"
 [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || die "invalid port: $PORT"
 [[ "$LISTEN" =~ ^[0-9A-Fa-f.:]+$ ]] || die "--listen must be an IP address (e.g. 0.0.0.0, ::, 127.0.0.1)"
+[[ "$EXPORTER_PORT" =~ ^[0-9]+$ ]] && [ "$EXPORTER_PORT" -ge 1 ] && [ "$EXPORTER_PORT" -le 65535 ] || \
+  die "invalid exporter port: $EXPORTER_PORT"
+[ "$EXPORTER_PORT" != "$PORT" ] || die "the exporter port must differ from the dashboard port ($PORT)"
+[[ "$EXPORTER_LISTEN" =~ ^[0-9A-Fa-f.:]+$ ]] || die "--exporter-listen must be an IP address"
 case "$INSTALL_DIR" in /*) ;; *) die "--dir must be an absolute path" ;; esac
 # Normalise before the safety check, so "/opt/" or "//opt" can't slip past it (and later be
 # chown'd or, with --purge, deleted).
@@ -70,6 +86,11 @@ fi
 
 # ---------------------------------------------------------------- uninstall
 if [ "$UNINSTALL" = 1 ]; then
+  if [ -f "$EXPORTER_UNIT" ] || [ "$DRY_RUN" = 1 ]; then
+    say "Removing the ${EXPORTER_NAME} service"
+    run systemctl disable --now "$EXPORTER_NAME" || true
+    run rm -f "$EXPORTER_UNIT"
+  fi
   say "Removing the ${SERVICE_NAME} service"
   if [ -f "$UNIT_FILE" ] || [ "$DRY_RUN" = 1 ]; then
     run systemctl disable --now "$SERVICE_NAME" || true
@@ -205,6 +226,22 @@ else
       --exclude=./config.json --exclude=./.git --exclude=./docs -cf - . | tar -C "$INSTALL_DIR" --no-same-owner -xf -
 fi
 
+# Record which commit this install came from (the install folder has no .git); the page footer
+# shows it so an out-of-date server is easy to spot.
+if command -v git >/dev/null && git -c safe.directory="$SRC_DIR" -C "$SRC_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+  G="git -c safe.directory=$SRC_DIR -C $SRC_DIR"
+  COMMIT="$($G log -1 --format=%h)"; CDATE="$($G log -1 --format=%cs)"
+  MODIFIED=false; [ -n "$($G status --porcelain --untracked-files=no)" ] && MODIFIED=true
+  say "Installing commit $COMMIT ($CDATE)$([ "$MODIFIED" = true ] && echo ' with local changes')"
+  if [ "$DRY_RUN" = 1 ]; then
+    run "write $INSTALL_DIR/VERSION.json (commit $COMMIT, $CDATE)"
+  else
+    printf '{"commit": "%s", "date": "%s", "modified": %s}\n' "$COMMIT" "$CDATE" "$MODIFIED" > "$INSTALL_DIR/VERSION.json"
+  fi
+else
+  warn "not installing from a git clone; the footer won't show which commit is installed"
+fi
+
 say "Setting up the Python environment"
 run "$PYTHON" -m venv "$INSTALL_DIR/.venv"   # always fresh: built from the system Python
 run "$INSTALL_DIR/.venv/bin/pip" install --quiet --disable-pip-version-check --upgrade pip
@@ -297,6 +334,87 @@ PY
   fi
 fi
 
+# ---------------------------------------------------------------- optional exporter
+if [ "$EXPORTER" = "auto" ]; then
+  if [ -f "$EXPORTER_UNIT" ]; then EXPORTER=yes; else EXPORTER=no; fi
+fi
+if [ "$EXPORTER" = yes ]; then
+  case "$LISTEN" in
+    0.0.0.0|::|127.0.0.1) DASH_URL="http://127.0.0.1:$PORT" ;;
+    ::1)                  DASH_URL="http://[::1]:$PORT" ;;
+    *:*)                  DASH_URL="http://[$LISTEN]:$PORT" ;;
+    *)                    DASH_URL="http://$LISTEN:$PORT" ;;
+  esac
+  TOKEN_FILE="$DATA_DIR/exporter.token"
+  if [ ! -e "$TOKEN_FILE" ]; then
+    say "Generating an access token for the exporter"
+    if [ "$DRY_RUN" = 1 ]; then
+      run "create $TOKEN_FILE (random token, mode 600) as $SERVICE_USER"
+    else
+      # Written by the service user (never root inside data/), readable only by it.
+      runuser -u "$SERVICE_USER" -- "$PYTHON" - "$TOKEN_FILE" <<'PY'
+import os, secrets, sys
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+with os.fdopen(fd, "w") as f:
+    f.write(secrets.token_urlsafe(32) + "\n")
+PY
+    fi
+  fi
+  say "Writing $EXPORTER_UNIT"
+  EXPORTER_CONTENT="[Unit]
+Description=Near Node Dashboard exporter (publishes the dashboard's data for central scraping)
+Documentation=file://$INSTALL_DIR/README.md
+After=network-online.target ${SERVICE_NAME}.service
+Wants=${SERVICE_NAME}.service
+
+[Service]
+User=$SERVICE_USER
+Group=$SERVICE_USER
+WorkingDirectory=$INSTALL_DIR
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=$INSTALL_DIR/.venv/bin/python exporter.py --dashboard $DASH_URL --host $EXPORTER_LISTEN --port $EXPORTER_PORT --token-file $TOKEN_FILE
+Restart=always
+RestartSec=5
+# Hardening: the exporter only reads; it can't write anywhere.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+"
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '%s' "$EXPORTER_CONTENT" | sed 's/^/    [dry-run unit] /'
+  else
+    printf '%s' "$EXPORTER_CONTENT" > "$EXPORTER_UNIT"
+    chmod 644 "$EXPORTER_UNIT"
+  fi
+  run systemctl daemon-reload
+  run systemctl enable "$EXPORTER_NAME"
+  run systemctl restart "$EXPORTER_NAME"
+  if [ "$DRY_RUN" = 0 ]; then
+    ok=0
+    for _ in $(seq 1 15); do
+      if "$PYTHON" - "$EXPORTER_PORT" <<'PY' 2>/dev/null
+import sys, urllib.request, urllib.error
+try:
+    urllib.request.urlopen(f"http://127.0.0.1:{sys.argv[1]}/healthz", timeout=2)
+except urllib.error.HTTPError:
+    pass   # 503 = running, dashboard not read yet; still answering
+PY
+      then ok=1; break; fi
+      sleep 1
+    done
+    if [ "$ok" = 1 ]; then say "Exporter is running (service: $EXPORTER_NAME, port $EXPORTER_PORT)"
+    else warn "the exporter didn't answer yet. Check: journalctl -u $EXPORTER_NAME -n 50"; fi
+  fi
+elif [ -f "$EXPORTER_UNIT" ]; then
+  say "Removing the ${EXPORTER_NAME} service (--without-exporter)"
+  run systemctl disable --now "$EXPORTER_NAME" || true
+  run rm -f "$EXPORTER_UNIT"
+  run systemctl daemon-reload
+fi
+
 HOST_HINT="$(hostname -f 2>/dev/null || hostname)"
 echo
 case "$LISTEN" in
@@ -325,3 +443,14 @@ Manage it:
     sudo systemctl restart $SERVICE_NAME
 To upgrade: git pull in $SRC_DIR, then run this installer again (settings and data are kept).
 EOF
+if [ "$EXPORTER" = yes ]; then
+  echo
+  echo "Exporter (for central scraping) on port $EXPORTER_PORT:"
+  for ip in $(hostname -I 2>/dev/null | tr ' ' '\n' | grep -v ':'); do echo "    http://$ip:$EXPORTER_PORT/   (status page)"; done
+  echo "    /metrics = Prometheus format, /api/v1/snapshot = JSON, /healthz = health check"
+  if [ "$DRY_RUN" = 0 ]; then
+    echo "  Access token (send as 'Authorization: Bearer <token>', or ?token=<token> in a browser):"
+    echo "    $(cat "$TOKEN_FILE")"
+  fi
+  echo "  Show it again later: sudo cat $DATA_DIR/exporter.token"
+fi

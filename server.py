@@ -31,6 +31,8 @@ from collections import OrderedDict
 import psutil
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_VERSION = "1.0.0"
+REPO_URL = "https://github.com/Nobody-Inc/NearNodeDashboard"
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 DEFAULT_CONFIG = {
@@ -362,6 +364,33 @@ class DBPool:
                 self._q.put(c)
             else:
                 c.close()
+
+
+def version_info():
+    """App version plus the git commit it was installed from. install.sh writes VERSION.json
+    (the install folder has no .git); a copy run straight from a git clone asks git."""
+    info = {"version": APP_VERSION, "commit": None, "date": None, "modified": False, "repo": REPO_URL}
+    try:
+        with open(os.path.join(BASE_DIR, "VERSION.json")) as f:
+            data = json.load(f)
+        info.update({k: data.get(k) for k in ("commit", "date", "modified") if k in data})
+        return info
+    except (OSError, ValueError):
+        pass
+    try:
+        out = subprocess.run(["git", "-C", BASE_DIR, "log", "-1", "--format=%h %cs"], capture_output=True,
+                             text=True, timeout=5)
+        if out.returncode == 0 and out.stdout.strip():
+            info["commit"], info["date"] = out.stdout.split()[:2]
+            dirty = subprocess.run(["git", "-C", BASE_DIR, "status", "--porcelain", "--untracked-files=no"],
+                                   capture_output=True, text=True, timeout=5)
+            info["modified"] = bool(dirty.stdout.strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
+    return info
+
+
+VERSION_INFO = None   # filled at startup by main()
 
 
 def db_init(path):
@@ -2041,7 +2070,7 @@ def make_handler(app, hosts):
                 return self._send(200, app.config.snapshot())
             if u.path == "/api/latest":
                 return self._send(200, {**app.near.latest, "host_checks": app.host_checks,
-                                        "server_hostname": socket.gethostname(),
+                                        "server_hostname": socket.gethostname(), "app_version": VERSION_INFO,
                                         "read_only": bool(app.config.get("read_only"))})
             # Only API routes take ?range=; static files ignore query strings.
             rng = self._qnum(q, "range", 3600, 60, MAX_RANGE_SEC) if u.path.startswith("/api/") else None
@@ -2146,6 +2175,8 @@ def main():
                          "localhost, this machine's hostname and IP addresses are always allowed")
     args = ap.parse_args()
 
+    global VERSION_INFO
+    VERSION_INFO = version_info()
     config = Config(args.config)
     db_path = os.path.join(BASE_DIR, config.get("db_path"))
     db_init(db_path)
@@ -2179,7 +2210,9 @@ def main():
     threading.Thread(target=host_checks, daemon=True).start()
 
     server = make_server(args.host, args.port, make_handler(app, allowed_hosts(args.host, args.allow_host)))
-    print(f"Near Node Dashboard listening on {args.host}:{args.port}  "
+    print(f"Near Node Dashboard {APP_VERSION}"
+          + (f" ({VERSION_INFO['commit']}, {VERSION_INFO['date']})" if VERSION_INFO.get("commit") else "")
+          + f" listening on {args.host}:{args.port}  "
           f"(interval {config.interval}s, retention {config.get('retention_hours')}h, rpc {config.get('rpc_url')})",
           flush=True)
     for url in listen_urls(args.host, args.port):

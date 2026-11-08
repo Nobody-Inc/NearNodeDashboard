@@ -312,6 +312,7 @@ tr.gone:hover td { opacity: 0.85; }
 
   <footer class="site-footer">
     <span>Near Node Dashboard</span><span aria-hidden="true">·</span>
+    <span id="appVersion" title="Compare with the latest commit on GitHub to see if this install is behind"></span><span aria-hidden="true" id="appVersionSep" hidden>·</span>
     <span>Created by <a href="https://nobodyinc.net" target="_blank" rel="noopener">nobodyinc.net</a></span><span aria-hidden="true">·</span>
     <a href="https://github.com/Nobody-Inc/NearNodeDashboard" target="_blank" rel="noopener">GitHub</a>
   </footer>
@@ -859,9 +860,23 @@ function renderNodeName(L) {
   if (document.title !== title) document.title = title;
 }
 
+// Footer: app version and the commit this install came from (links to it on GitHub).
+function renderVersion(v) {
+  const el = document.getElementById("appVersion");
+  if (!v || !v.version || el.dataset.shown === JSON.stringify(v)) return;
+  el.dataset.shown = JSON.stringify(v);
+  const commit = v.commit && /^[0-9a-f]{4,40}$/.test(v.commit)
+    ? ` · <a href="${esc(v.repo)}/commit/${esc(v.commit)}" target="_blank" rel="noopener">${esc(v.commit)}</a>` +
+      (v.date ? ` (${esc(v.date)})` : "") + (v.modified ? " + local changes" : "")
+    : "";
+  el.innerHTML = `v${esc(v.version)}${commit}`;
+  document.getElementById("appVersionSep").hidden = false;
+}
+
 function renderHeader() {
   const L = latest || {}, n = lastData?.near || {}, s = lastData?.system || {};
   renderNodeName(L);
+  renderVersion(L.app_version);
   if (config && typeof L.read_only === "boolean" && L.read_only !== !!config.read_only) {
     config.read_only = L.read_only;   // server restarted with read_only changed
     applyReadOnly();
@@ -882,8 +897,9 @@ function renderHeader() {
   if (L.protocol_version) sub.push("protocol " + esc(L.protocol_version) + (L.latest_protocol_version && L.latest_protocol_version !== L.protocol_version ? ` (latest ${esc(L.latest_protocol_version)})` : ""));
   if (L.node_uptime_sec) sub.push("node up " + fmtDur(L.node_uptime_sec));
   if (config) sub.push(`collecting every ${config.fast_mode ? 1 : config.interval_seconds}s · keep ${config.retention_hours}h`);
-  if (lastData) sub.push("updated " + new Date(lastData.now * 1000).toLocaleTimeString());
+  sub.push('<span id="updatedInfo"></span>');
   document.getElementById("sub").innerHTML = sub.map(x => `<span>${x}</span>`).join("");
+  updateCountdown();
 
   const banner = document.getElementById("banner");
   const errs = [L.error, L.network_info_error && "network_info: " + L.network_info_error, L.validators_error && "validators: " + L.validators_error,
@@ -1219,6 +1235,30 @@ async function getJSON(url) {
 // what's due; it makes no request unless something is.
 const POLL_EVERY = { peers: 30, shard: 60, logs: 15 };      // seconds
 const lastFetch = { core: 0, peers: 0, shard: 0, logs: 0 };  // core = charts + header (/api/metrics, /api/latest)
+const collectionInterval = () => config?.fast_mode ? 1 : (config?.interval_seconds || 60);
+// When the charts and header are next fetched. In normal mode that's just after the server's next
+// sample is due, so new data shows up within a couple of seconds without extra requests; when chart
+// buckets are longer than the collection interval (e.g. 1s mode on the 24h view), it's the bucket cadence.
+function nextCoreAt() {
+  const every = coreEvery(), iv = collectionInterval(), t = latest?.time;
+  if (every <= iv && isNum(t)) {
+    const next = t + iv + 2;                  // just after the next sample
+    if (next > lastFetch.core) return next;   // that sample is still to come
+    return lastFetch.core + Math.min(every, 15);   // sample is late: check again soon
+  }
+  return lastFetch.core + every;
+}
+// Header: when the shown data was collected, and the countdown to the next update.
+function updateCountdown() {
+  const el = document.getElementById("updatedInfo");
+  if (!el) return;
+  const now = Date.now() / 1000, t = latest?.time;
+  if (!isNum(t) || !lastFetch.core) { el.textContent = ""; return; }
+  const left = Math.round(nextCoreAt() - now);
+  el.textContent = `last updated ${new Date(t * 1000).toLocaleTimeString()} (${fmtDur(Math.max(0, now - t))} ago)` +
+    (document.hidden ? "" : ` · next update ${left > 0 ? "in " + (left < 60 ? left + "s" : fmtDur(left)) : "now"}`);
+}
+
 function coreEvery() {
   // New samples arrive once per collection interval, and a chart point covers one bucket
   // (e.g. 144 s on the 24h view), so polling faster than the longer of the two changes nothing.
@@ -1242,7 +1282,7 @@ async function refresh() {
   if (refreshing) { refreshQueued = true; return; }
   if (document.hidden) return;
   const now = Date.now() / 1000;
-  const due = g => wanted(g) && now - lastFetch[g] >= (g === "core" ? coreEvery() : POLL_EVERY[g]) - 0.25;
+  const due = g => wanted(g) && (g === "core" ? now >= nextCoreAt() - 0.25 : now - lastFetch[g] >= POLL_EVERY[g] - 0.25);
   const readingLog = !!document.querySelector("#logTable .msg.open");
   const jobs = {};
   if (due("core")) {
@@ -1285,7 +1325,7 @@ async function refresh() {
 }
 
 function schedule() {
-  if (!timer) timer = setInterval(refresh, 1000);
+  if (!timer) timer = setInterval(() => { updateCountdown(); refresh(); }, 1000);
 }
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) invalidate(["core"]);   // catch up straight away when the tab is shown again
