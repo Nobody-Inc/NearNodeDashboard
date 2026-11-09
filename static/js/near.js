@@ -424,6 +424,83 @@ document.getElementById("shardEndorsers").addEventListener("change", e => {
   invalidate(["shard"]);
 });
 
+// ---------------------------------------------------------------- neard /metrics
+const nSum = arr => (arr || []).filter(isNum).reduce((a, b) => a + b, 0);
+const nIntAxis = v => Number.isInteger(v) ? fmtNum(v, 0) : "";
+const nMs = v => isNum(v) ? (v < 1 ? v.toFixed(2) : v < 10 ? v.toFixed(1) : v.toFixed(0)) + " ms" : "—";
+const nPct = v => isNum(v) ? (v < 1 ? v.toFixed(3) : v.toFixed(2)) + "%" : "—";
+const neardLatest = () => latest?.neard_metrics || {};
+const kv = obj => Object.entries(obj || {}).map(([k, v]) => `${esc(k)} ${fmtNum(v, 0)}`).join(", ");
+
+// 1. chunk endorsements and state witnesses (validator section)
+card({ id: "endorse", group: "validator", title: "Chunk endorsements received",
+  sub: "Endorsements collected while about to produce a block; share rejected (mostly 'too late')",
+  src: "neard", fmt: nPct, axisFmt: v => v + "%",
+  series: [{ key: "endorse_reject_pct", label: "Rejected", color: "--critical" }],
+  subFn: src => {   // the rates are per scrape; × bucket length = counts in the range
+    const b = src.bucket || 60, acc = nSum(src.endorse_accepted_ps) * b, rej = nSum(src.endorse_rejected_ps) * b;
+    return acc + rej > 0 ? `${fmtNum(acc, 0)} accepted, ${fmtNum(rej, 0)} rejected in range` : "none received in range (only while producing)";
+  },
+  trend: (st, def, src) => {
+    const L = neardLatest(), fails = nSum(src.witness_validation_failed);
+    return `<span>rejected since neard start: ${kv(L.rejected_by_reason) || "none"}</span>` +
+      `<span>${fails ? `<b>${fmtNum(fails, 0)} witness validation failure(s)</b>` : "no witness validation failures"} in range` +
+      (L.validation_failed_by_error && Object.keys(L.validation_failed_by_error).length ? ` (since start: ${kv(L.validation_failed_by_error)})` : "") + `</span>`;
+  } });
+card({ id: "witness", group: "validator", title: "Chunk state witnesses", src: "neard", fmt: nMs, axisFmt: v => fmtNum(v) + " ms",
+  sub: "Network round trip of witnesses to this node (p90 and average), and time to validate one",
+  series: [{ key: "witness_rtt_p90_ms", label: "Round trip p90", color: "--s1" }, { key: "witness_rtt_ms", label: "Round trip avg", color: "--s3" },
+           { key: "witness_validation_ms", label: "Validation", color: "--s2" }] });
+// 4. blocks this node produced
+card({ id: "produced", group: "validator", title: "Blocks you produced", src: "neard", fmt: v => fmtPct(v, 2), axisFmt: v => v + "%",
+  sub: "Share of stake that endorsed the chunks in your blocks", yMax: 100, beginAtZero: false,
+  series: [{ key: "endorsed_stake_pct", label: "Endorsed stake", color: "--s1" }],
+  trend: (st, def, src) => {
+    const blocks = nSum(src.blocks_produced_n), excl = nSum(src.excluded_chunks);
+    const miss = (src.missing_endorsements || []).filter(isNum);
+    return `<span>${fmtNum(blocks, 0)} block(s) produced in range</span>` +
+      `<span>${excl ? `<b>${fmtNum(excl, 0)} chunk(s) excluded</b>` : "no chunks excluded"}</span>` +
+      (miss.length ? `<span>avg ${(miss.reduce((a, b) => a + b, 0) / miss.length).toFixed(1)} missing endorsements / chunk</span>` : "");
+  } });
+// 2, 3, 5, 6: node internals
+card({ id: "finality", group: "neard", title: "Finality lag", sub: "Blocks between the head and the last final block (normally 2–3)",
+  src: "neard", fmt: v => isNum(v) ? fmtNum(v, 0) + " blocks" : "—", axisFmt: nIntAxis, stepped: true,
+  series: [{ key: "finality_lag_blocks", label: "Lag", color: "--s1" }] });
+card({ id: "tiers", group: "neard", title: "Peer connections by tier",
+  sub: "Tier 1 = direct validator-to-validator connections; tier 2 = regular peers", src: "neard", fmt: v => fmtNum(v, 0),
+  series: [{ key: "peers_t1", label: "Tier 1", color: "--s1" }, { key: "peers_t2", label: "Tier 2", color: "--s2" }] });
+card({ id: "processing", group: "neard", title: "Block & chunk processing", src: "neard", fmt: nMs, axisFmt: v => fmtNum(v) + " ms",
+  sub: "Time to process a block (p90 and average) and to produce a chunk",
+  series: [{ key: "block_processing_p90_ms", label: "Block p90", color: "--s1" }, { key: "block_processing_ms", label: "Block avg", color: "--s3" },
+           { key: "produce_chunk_ms", label: "Chunk production", color: "--s2" }] });
+card({ id: "compaction", group: "neard", title: "Database compaction backlog", src: "neard", fmt: v => fmtBytes(v), axisFmt: fmtBytesAxis,
+  sub: "RocksDB bytes waiting for compaction (a backlog slows the node)",
+  series: [{ key: "db_pending_compaction_bytes", label: "Pending", color: "--s1" }],
+  subFn: src => { const r = lastOf(src.db_running_compactions); return isNum(r) ? `${fmtNum(r, 0)} compaction(s) running` : ""; } });
+card({ id: "dbsize", group: "neard", title: "Database size", sub: "RocksDB live SST files", src: "neard", fmt: v => fmtBytes(v),
+  axisFmt: fmtBytesAxis, beginAtZero: false, series: [{ key: "db_sst_bytes", label: "Size", color: "--s1" }],
+  trend: (st, def) => {
+    const s = st[0]; if (!s) return "";
+    return trendHtml(s, def, { extra: isNum(s.slope) ? `${s.slope >= 0 ? "+" : "−"}${fmtBytes(Math.abs(s.slope) * 24)} / day` : "" });
+  } });
+
+// 7. protocol upgrade, and whether /metrics is being read
+function renderNeardInfo() {
+  const el = document.getElementById("neardInfo");
+  if (!el) return;
+  const L = latest?.neard_metrics;
+  if (!L) { el.textContent = "off (Settings → Data collection → neard metrics)"; return; }
+  if (L.error) { el.innerHTML = `<span style="color:var(--warning)">⚠ can't read ${esc(L.url || "/metrics")}: ${esc(L.error)}</span>`; return; }
+  const sup = L.node_protocol_version, nxt = L.protocol_version_next;
+  const votes = Object.entries(L.votes || {}).sort((a, b) => b[0] - a[0]).map(([v, p]) => `v${esc(v)} ${fmtNum(p, 0)}%`).join(", ");
+  const parts = [`from ${esc(L.url)} every ${config?.metrics_interval_seconds || 60}s`];
+  if (isNum(sup)) parts.push(`neard supports protocol up to v${sup}`);
+  if (isNum(nxt)) parts.push(nxt > sup ? `<b style="color:var(--critical)">next epoch v${nxt}: upgrade neard</b>` : `next epoch v${nxt}`);
+  if (votes) parts.push(`stake voting: ${votes}`);
+  if (isNum(L.protocol_upgrade_height)) parts.push(`upgrade at block ${fmtNum(L.protocol_upgrade_height, 0)}`);
+  el.innerHTML = parts.join(" · ");
+}
+
 // ---------------------------------------------------------------- RED summary for the neard service
 function renderRed() {
   // RED for the neard service
@@ -442,6 +519,7 @@ function renderRed() {
 registerModule({
   name: "near",
   sections: { node: "collect_node", validator: "collect_validator", shard: "collect_validator", peers: "collect_peers" },
+  chartSections: { neard: "node" },
   tileOrder: 0,
   header(L) {
     const n = lastData?.near || {};
@@ -491,6 +569,7 @@ registerModule({
   afterCore() {
     renderChecks(latest.host_checks);
     renderRed();
+    renderNeardInfo();
   },
   polls: {
     peers: { every: 30, wanted: () => config?.collect_peers !== false && (sectionOpen("peers") || sectionOpen("node")),

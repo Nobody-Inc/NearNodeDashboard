@@ -292,6 +292,8 @@ tr.gone:hover td { opacity: 0.85; }
         </div>
       </div>
       <div class="grid" id="g-node"></div>
+      <h3 class="sub-h">neard internals <span class="card-s" id="neardInfo"></span></h3>
+      <div class="grid" id="g-neard"></div>
       <div class="logpanel">
         <h3 class="sub-h">Service log <span class="card-s" id="logStatus"></span></h3>
         <div class="peers-bar">
@@ -402,6 +404,7 @@ tr.gone:hover td { opacity: 0.85; }
       <label data-module="near"><input type="checkbox" name="collect_validator"><span>Validator<small>validators RPC; also feeds the shard table</small></span></label>
       <label data-module="near"><input type="checkbox" name="collect_peers"><span>Peers<small>peer tracking, churn and pings</small></span></label>
       <label data-module="near"><input type="checkbox" name="collect_logs"><span>Service log<small>WARN / ERROR lines from neard</small></span></label>
+      <label data-module="near"><input type="checkbox" name="collect_metrics"><span>neard metrics<small>/metrics: endorsements, finality, tier-1 peers, DB, upgrades</small></span></label>
       <label data-module="system"><input type="checkbox" name="collect_health"><span>Health &amp; security<small>DNS, gateway &amp; DNS servers, clock, logins, log rates, SMART, patches</small></span></label>
     </fieldset>
     <div class="row2" data-module="near">
@@ -519,6 +522,18 @@ tr.gone:hover td { opacity: 0.85; }
     <div class="field" data-module="near">
       <label for="c-ptimeout">Ping timeout (ms)</label>
       <input type="number" id="c-ptimeout" name="ping_timeout_ms" min="100" max="10000" required>
+    </div>
+    <div class="row2" data-module="near">
+      <div class="field" data-module="near">
+        <label for="c-murl">neard metrics URL</label>
+        <input type="text" id="c-murl" name="metrics_url" placeholder="(RPC URL + /metrics)">
+        <small>neard's Prometheus endpoint, about 3 MB per read on mainnet.</small>
+      </div>
+      <div class="field" data-module="near">
+        <label for="c-mint">Read metrics every (s)</label>
+        <input type="number" id="c-mint" name="metrics_interval_seconds" min="15" max="3600" required>
+        <small>Not affected by 1s mode. Keep it long for a remote node.</small>
+      </div>
     </div>
     <div class="actions">
       <span class="err" id="settingsErr"></span>

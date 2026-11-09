@@ -65,6 +65,10 @@ def build_snapshot(base):
     logs = fetch(base, "/api/logs?range=3600") if has_near else {}
     shard = fetch(base, "/api/shard?range=3600") if has_near else {}
     sysm, near, ping = metrics.get("system", {}), metrics.get("near", {}), metrics.get("ping", {})
+    nd, NL = metrics.get("neard", {}), latest.get("neard_metrics") or {}
+    D = lambda k: last_value(nd, k)  # noqa: E731
+    D_sum = lambda k: sum(v for v in (nd.get(k) or []) if num(v) is not None) if nd.get("t") else None  # noqa: E731
+    ms_s = lambda v: None if v is None else v / 1000  # noqa: E731
     S = lambda k: last_value(sysm, k)  # noqa: E731
     S_sum = lambda k: sum(v for v in (sysm.get(k) or []) if num(v) is not None) if has_system else None  # noqa: E731
     N = lambda k: last_value(near, k)  # noqa: E731
@@ -168,6 +172,26 @@ def build_snapshot(base):
         "logs_1h": {"warnings": (logs.get("counts") or {}).get("WARN"), "errors": (logs.get("counts") or {}).get("ERROR"),
                     "source_ok": (logs.get("status") or {}).get("ok")},
         "host_checks": [{"title": c.get("title"), "status": c.get("status"), "detail": c.get("detail")} for c in checks],
+        "neard": {
+            "metrics_ok": None if not NL else 0 if NL.get("error") else 1,
+            "finality_lag_blocks": D("finality_lag_blocks"),
+            "peers_tier1": D("peers_t1"), "peers_tier2": D("peers_t2"),
+            "endorsements_accepted_per_second": D("endorse_accepted_ps"),
+            "endorsements_rejected_ratio": pct(D("endorse_reject_pct")),
+            "witness_roundtrip_p90_seconds": ms_s(D("witness_rtt_p90_ms")),
+            "witness_validation_seconds": ms_s(D("witness_validation_ms")),
+            "witness_validation_failures_1h": D_sum("witness_validation_failed"),
+            "produced_blocks_1h": D_sum("blocks_produced_n"),
+            "produced_endorsed_stake_ratio": pct(D("endorsed_stake_pct")),
+            "produced_excluded_chunks_1h": D_sum("excluded_chunks"),
+            "block_processing_p90_seconds": ms_s(D("block_processing_p90_ms")),
+            "chunk_production_seconds": ms_s(D("produce_chunk_ms")),
+            "db_pending_compaction_bytes": D("db_pending_compaction_bytes"),
+            "db_size_bytes": D("db_sst_bytes"),
+            "protocol_supported": num(NL.get("node_protocol_version")),
+            "protocol_next_epoch": num(NL.get("protocol_version_next")),
+            "protocol_votes": {k: v for k, v in (NL.get("votes") or {}).items() if num(v) is not None},
+        },
     }
 
 
@@ -312,6 +336,27 @@ def prometheus(snap, meta, per_peer=False):
     for a in alerts:
         g("alert", 1, "An active alert (1 while it lasts)", {"alert": a.get("id") or "", "severity": a.get("severity") or "",
                                                              "title": a.get("title") or ""})
+    # neard's own metrics (/metrics)
+    nm = snap.get("neard") or {}
+    for key, help_ in [("metrics_ok", "1 if the dashboard can read neard's /metrics"),
+                       ("finality_lag_blocks", "Blocks between the head and the last final block"),
+                       ("peers_tier1", "Tier-1 (direct validator) peer connections"), ("peers_tier2", "Tier-2 peer connections"),
+                       ("endorsements_accepted_per_second", "Chunk endorsements accepted per second"),
+                       ("endorsements_rejected_ratio", "Share of chunk endorsements rejected (0-1)"),
+                       ("witness_roundtrip_p90_seconds", "90th percentile chunk state witness network round trip"),
+                       ("witness_validation_seconds", "Average chunk state witness validation time"),
+                       ("witness_validation_failures_1h", "Chunk state witness validation failures in the last hour"),
+                       ("produced_blocks_1h", "Blocks this node produced in the last hour"),
+                       ("produced_endorsed_stake_ratio", "Share of stake endorsing the chunks in this node's blocks (0-1)"),
+                       ("produced_excluded_chunks_1h", "Chunks excluded from this node's blocks in the last hour"),
+                       ("block_processing_p90_seconds", "90th percentile block processing time"),
+                       ("chunk_production_seconds", "Average chunk production time"),
+                       ("db_pending_compaction_bytes", "RocksDB bytes pending compaction"), ("db_size_bytes", "RocksDB live SST size"),
+                       ("protocol_supported", "Highest protocol version this neard supports"),
+                       ("protocol_next_epoch", "Protocol version of the next epoch")]:
+        g("neard_" + key, nm.get(key), help_)
+    for ver, pct_ in (nm.get("protocol_votes") or {}).items():
+        g("neard_protocol_votes_ratio", pct_ / 100, "Share of stake voting for a protocol version (0-1)", {"protocol_version": str(ver)})
     # logs, host checks
     g("log_warnings_1h", lg.get("warnings"), "neard WARN lines in the last hour")
     g("log_errors_1h", lg.get("errors"), "neard ERROR lines in the last hour")

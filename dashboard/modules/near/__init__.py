@@ -11,10 +11,11 @@ from dashboard.core.alerts import alert
 from dashboard.core.collect import run_loop
 from dashboard.core.config import Setting, boolean, choice, integer, text, url
 from dashboard.core.module import Module
-from dashboard.core.storage import CACHE, db_query
+from dashboard.core.storage import CACHE, db_connect, db_insert, db_query
 from dashboard.modules.near.collector import NEAR_COLS, NearCollector, epoch_marks, version_changes
 from dashboard.modules.near.hostchecks import run_host_checks
 from dashboard.modules.near.logs import LogCollector
+from dashboard.modules.near.nodemetrics import NEARD_COLS, NodeMetrics
 from dashboard.modules.near.pinger import PING_COLS, Pinger
 
 
@@ -69,13 +70,24 @@ class NearModule(Module):
         "p2p_port": Setting(24567, integer(1, 65535)),
         # Read firewall rules with `sudo -n` (off: each attempt is logged as a failed sudo login).
         "firewall_check_sudo": Setting(False, boolean),
+        # neard's Prometheus metrics: endorsement health, finality, tier-1 peers, produced block
+        # quality, processing times, RocksDB compaction, protocol upgrade voting. ~3 MB per scrape on
+        # mainnet, so keep the interval long when the node is remote.
+        "collect_metrics": Setting(True, boolean),
+        "metrics_url": Setting("", url(required=False)),          # blank = <rpc_url>/metrics
+        "metrics_interval_seconds": Setting(60, integer(15, 3600)),  # not affected by fast_mode
     }
-    series = {"near": NEAR_COLS, "ping_rounds": PING_COLS}
+    series = {"near": NEAR_COLS, "ping_rounds": PING_COLS, "neard": NEARD_COLS}
     aggregations = {**{c: "MAX" for c in ("block_height", "epoch_height", "max_peers", "blocks_produced",
                                           "blocks_expected", "chunks_produced", "chunks_expected",
                                           "endorsements_produced", "endorsements_expected", "epoch_progress_pct",
                                           "protocol_version", "latest_protocol_version", "epoch_start_height")},
-                    "ok": "MIN", "peer_joins": "SUM", "peer_leaves": "SUM"}
+                    "ok": "MIN", "peer_joins": "SUM", "peer_leaves": "SUM",
+                    # neard metrics: per-scrape counts add up within a bucket
+                    **{c: "SUM" for c in ("witness_validation_failed", "blocks_produced_n", "excluded_chunks")},
+                    **{c: "MAX" for c in ("finality_lag_blocks", "db_pending_compaction_bytes", "db_sst_bytes",
+                                          "node_protocol_version", "protocol_version_next", "protocol_upgrade_height",
+                                          "is_validator", "is_block_producer")}}
     schema = [
         "CREATE TABLE IF NOT EXISTS peer_pings (ts REAL, ip TEXT, peer_id TEXT, rtt_ms REAL)",
         "CREATE INDEX IF NOT EXISTS peer_pings_ip_ts ON peer_pings (ip, ts)",
@@ -95,7 +107,7 @@ class NearModule(Module):
         """CREATE TABLE IF NOT EXISTS version_history (
         ts REAL, version TEXT, build TEXT, protocol_version INTEGER, latest_protocol_version INTEGER)""",
     ]
-    retention = [f"DELETE FROM {t} WHERE ts < ?" for t in ("near", "ping_rounds", "peer_pings", "peer_events", "node_logs")] \
+    retention = [f"DELETE FROM {t} WHERE ts < ?" for t in ("near", "ping_rounds", "peer_pings", "peer_events", "node_logs", "neard")] \
         + ["DELETE FROM peers_seen WHERE connected = 0 AND last_seen < ?"]
 
     def __init__(self, app):
@@ -104,6 +116,7 @@ class NearModule(Module):
         self.near.db_path = app.db_path
         self.pinger = Pinger(self.config, self.near)
         self.logs = LogCollector(self.config)
+        self.nodemetrics = NodeMetrics(self.config)
         self.host_checks = {"time": None, "running": True, "items": []}  # filled once at startup
 
     def start(self, stop):
@@ -113,6 +126,7 @@ class NearModule(Module):
                                lambda: any(cfg.get(k) for k in ("collect_node", "collect_validator", "collect_peers")))).start()
         threading.Thread(target=self.pinger.run, args=(self.app.db_path, stop), daemon=True).start()
         threading.Thread(target=self.logs.run, args=(self.app.db_path, stop), daemon=True).start()
+        threading.Thread(target=self._metrics_loop, args=(stop,), daemon=True).start()
 
         def host_checks():  # once per service start, off the main thread (firewall tools can be slow)
             self.host_checks = run_host_checks(cfg, self.near, stop=stop)
@@ -124,17 +138,34 @@ class NearModule(Module):
     def describe(self):
         return f"rpc {self.config.get('rpc_url')}"
 
+    def _metrics_loop(self, stop):
+        """Scrape neard's /metrics every metrics_interval_seconds (independent of 1s mode)."""
+        conn = db_connect(self.app.db_path)
+        while not stop.is_set():
+            if self.config.get("collect_metrics"):
+                try:
+                    ts, row = self.nodemetrics.sample()
+                    if row:
+                        db_insert(conn, "neard", NEARD_COLS, ts, row)
+                except Exception as e:   # never let the loop die
+                    print(f"[neard metrics] {e!r}", flush=True)
+            stop.wait(int(self.config.get("metrics_interval_seconds")))
+        conn.close()
+
     def latest(self):
-        return {**self.near.latest, "host_checks": self.host_checks}
+        return {**self.near.latest, "host_checks": self.host_checks,
+                "neard_metrics": self.nodemetrics.latest if self.config.get("collect_metrics") else None}
 
     def metrics(self, conn, since, bucket):
         ping_bucket = max(bucket, int(self.config.get("ping_interval_seconds")))
+        metrics_bucket = max(bucket, int(self.config.get("metrics_interval_seconds")))
         return {
             "near": db_query(conn, "near", NEAR_COLS, since, bucket),
             "versions": version_changes(conn, since),
             "epochs": epoch_marks(conn, since),
             "logs": self.logs.series(conn, since, max(bucket, 60)),
             "ping": {**db_query(conn, "ping_rounds", PING_COLS, since, ping_bucket), "bucket": ping_bucket},
+            "neard": {**db_query(conn, "neard", NEARD_COLS, since, metrics_bucket), "bucket": metrics_bucket},
         }
 
     # ---------------------------------------------------------------- routes
@@ -222,6 +253,53 @@ class NearModule(Module):
         for item in (self.host_checks or {}).get("items", []):
             if item.get("status") == "fail":
                 add(f"hostcheck_{item.get('id')}", "warning", f"Host check failed: {item.get('title')}", item.get("detail", ""))
+        # ---- neard /metrics: endorsement health, finality, tier-1 peers, database, protocol upgrade
+        if cfg["collect_metrics"]:
+            out += self._metrics_alerts(ctx)
+        return out
+
+    def _metrics_alerts(self, ctx):
+        out = []
+
+        def add(id_, severity, title, detail):
+            out.append(alert(id_, severity, title, detail))
+
+        every = int(ctx.config["metrics_interval_seconds"])
+        win = max(600, 3 * every)    # sustained over at least 3 scrapes
+        M = self.nodemetrics.latest or {}
+        failed = ctx.window("neard", ["witness_validation_failed"], max(900, every), "SUM")["witness_validation_failed"]
+        if failed:
+            why = ", ".join(f"{k} ({v:.0f} total)" for k, v in (M.get("validation_failed_by_error") or {}).items())
+            add("witness_validation", "warning", "Chunk witness validation failing",
+                f"{failed:.0f} state witness validation failure(s) in the last {max(900, every) // 60} minutes"
+                + (f": {why}" if why else "") + ". storage_error can point at a database or disk problem.")
+        w = ctx.window("neard", ["endorse_reject_pct", "finality_lag_blocks", "peers_t1", "is_validator",
+                                 "db_pending_compaction_bytes"], win, "MIN")
+        if w["endorse_reject_pct"] is not None and w["endorse_reject_pct"] > 1:
+            add("endorse_rejected", "warning", "Chunk endorsements being rejected",
+                f"At least {w['endorse_reject_pct']:.1f}% of chunk endorsements rejected in every scrape for "
+                f"{win // 60} minutes (usually 'too late': the node is slow or its network is).")
+        if w["finality_lag_blocks"] is not None and w["finality_lag_blocks"] >= 10:
+            add("finality_lag", "critical" if w["finality_lag_blocks"] >= 50 else "warning", "Finality is lagging",
+                f"The last final block has been {w['finality_lag_blocks']:.0f}+ blocks behind the head for {win // 60} minutes.")
+        if w["is_validator"] and w["peers_t1"] is not None and w["peers_t1"] < 1:
+            add("no_tier1", "critical", "No tier-1 validator connections",
+                f"The node is a validator but has had no tier-1 (direct validator) connections for {win // 60} minutes.")
+        if w["db_pending_compaction_bytes"] is not None and w["db_pending_compaction_bytes"] > 2**30:
+            add("db_compaction", "warning", "Database compaction backlog",
+                f"RocksDB has had over {w['db_pending_compaction_bytes'] / 2**30:.1f} GiB pending compaction for {win // 60} minutes; "
+                "this slows the node and can cause missed chunks.")
+        supported, nxt = M.get("node_protocol_version"), M.get("protocol_version_next")
+        if supported and nxt and nxt > supported:
+            add("protocol_unsupported", "critical", "Upgrade neard now",
+                f"The next epoch uses protocol {nxt:.0f}, but this neard supports up to {supported:.0f}.")
+        elif supported:
+            ahead = {v: pct for v, pct in (M.get("votes") or {}).items() if v.isdigit() and int(v) > supported and pct > 0}
+            if ahead:
+                v, pct = max(ahead.items(), key=lambda kv: int(kv[0]))
+                add("protocol_vote", "warning", "Protocol upgrade coming",
+                    f"{pct:.0f}% of stake is voting for protocol {v}; this neard supports up to {supported:.0f}. "
+                    "Plan the neard upgrade.")
         return out
 
 

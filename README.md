@@ -154,6 +154,9 @@ Settings are stored in `config.json` (created on first run). You can change them
 | System | CPU % (whole machine and the `neard` process), load average, memory used and `neard` RSS, swap, disk usage on `disk_path` (with an estimate of when the disk will be full), disk read/write throughput, host network in/out |
 | NEAR node (`/status`, `/network_info`) | block height, blocks/sec, block lag (time since the node's latest block), sync state, active peers, P2P traffic, RPC latency, version and protocol |
 | Validator (`validators` JSON-RPC) | status (active, joining, proposal pending, not in set, kicked out with reason), stake, rank, seat price, blocks/chunks/endorsements produced vs expected this epoch, epoch progress and blocks remaining |
+| neard internals (`/metrics`) | chunk endorsements received and the share rejected, state witness network round trip (p90/avg) and validation time, witness validation failures, finality lag, tier-1 (validator) and tier-2 peer connections, quality of the blocks you produce (endorsed stake, excluded chunks), block processing and chunk production time, RocksDB compaction backlog and size, protocol version support and upgrade voting |
+
+neard's own metrics are read from its Prometheus endpoint (`<rpc_url>/metrics`) every `metrics_interval_seconds` (60 s; 1s mode doesn't change it). On mainnet the endpoint returns about 3 MB, which is nothing for a dashboard on the node but adds up if it reads a remote node, so lengthen the interval there. They raise alerts for witness validation failures, endorsements being rejected, finality lagging, losing all tier-1 connections, a database compaction backlog, and protocol upgrades (critical when the next epoch needs a protocol this neard doesn't support; a warning when stake starts voting for one).
 
 Every chart marks the start of each new epoch in the selected range with a dashed vertical line labelled with the epoch number, so you can see whether a change lines up with an epoch boundary.
 
@@ -219,6 +222,9 @@ Cheap metrics are sampled with every collection; slower checks run on their own 
 | `log_poll_seconds` | `10` | How often to check the log for new lines |
 | `p2p_port` | `24567` | neard's P2P port (`network.addr` in `~/.near/config.json`), checked for inbound access at startup |
 | `firewall_check_sudo` | `false` | Read firewall rules with `sudo -n` when not root. Only enable it if the service user has passwordless sudo for `ufw`/`iptables`/`nft`/`firewall-cmd`; otherwise each attempt is logged as a failed sudo authentication |
+| `collect_metrics` | `true` | Read neard's `/metrics` (the *neard internals* charts, the endorsement/witness/block-production charts in the Validator section, and their alerts) |
+| `metrics_url` | *(blank = `rpc_url` + `/metrics`)* | neard's Prometheus endpoint, if it's served elsewhere |
+| `metrics_interval_seconds` | `60` | How often `/metrics` is read (15–3600). Not affected by 1s mode |
 | `read_only` | `true` | Lock the settings: when `true` (the default), nothing can be changed from the web page (the Settings dialog becomes view-only and 1s mode is locked), and the page shows a warning. It can only be set by editing `config.json` on the server, and takes effect when the dashboard restarts |
 | `collect_health` | `true` | Run the slower health and security checks (DNS, clock, failed logins, system log rates, SMART, updates, IPMI) |
 | `dns_check_host` | `near.org` | Hostname resolved every minute to measure DNS time, and asked of each DNS server in the gateway/DNS server test |
